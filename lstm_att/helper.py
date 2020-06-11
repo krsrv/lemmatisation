@@ -7,12 +7,15 @@ import re
 import io
 import pickle
 
-def preprocess_sentence(w):
+def preprocess_sentence(w, clip_length=None):
     w = w.strip()
     w = re.sub(r'[" "]+', " ", w)
 
     # replacing everything with space except (ऀ-ॏ, ०-९ ".", "-")
     w = re.sub(r'[^\u0900-\u094f\u0966-\u096f?,.-]+', "", w)
+    
+    if clip_length:
+        w = w[-clip_length:]
 
     # adding a start and an end token to the sentence
     # so that the model know when to start and stop predicting.
@@ -23,9 +26,9 @@ def preprocess_sentence(w):
 # 1. Remove the accents
 # 2. Clean the sentences
 # 3. Return word pairs in the format: [Word, Lemma]
-def create_dataset(path, num_examples):
+def create_dataset(path, num_examples, clip_length):
     lines = io.open(path, encoding='UTF-8').read().strip().split('\n')
-    word_pairs = [[preprocess_sentence(w) for w in l.split()[1:]]  
+    word_pairs = [[preprocess_sentence(w, clip_length) for w in l.split()[1:]]  
         for l in lines[:num_examples]]
 
     return zip(*word_pairs)
@@ -43,14 +46,20 @@ def tokenize(lang, tokenizer=None):
 
     return tensor, lang_tokenizer
 
-def load_dataset(path, num_examples=None):
+def load_dataset(path, num_examples=None, clip_length=None):
     # creating cleaned input, output pairs
-    targ_lang, inp_lang = create_dataset(path, num_examples)
+    targ_lang, inp_lang = create_dataset(path, num_examples, clip_length)
 
     # since we are working on the same language, the same char set
     # works for both input and target language
     input_tensor, inp_lang_tokenizer = tokenize(inp_lang)
     target_tensor, lang_tokenizer = tokenize(targ_lang, inp_lang_tokenizer)
+
+    # Load all devanagari characters in tokenizer
+    chars = []
+    chars.append(''.join([chr(x) for x in range(ord('\u0900'),ord('\u094f'))]))
+    chars.append(''.join([chr(x) for x in range(ord('\u0966'),ord('\u096f'))]))
+    lang_tokenizer.fit_on_texts(chars)
 
     return input_tensor, target_tensor, lang_tokenizer
 

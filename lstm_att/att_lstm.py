@@ -56,8 +56,9 @@ logger.setLevel(logging.DEBUG)
 START_TOK, END_TOK = '<', '>'
 
 num_samples = args.num_samples
+clip_length = args.clip_length
 input_file = '../data/train.csv'
-input_tensor, target_tensor, lang = load_dataset(input_file, num_samples)
+input_tensor, target_tensor, lang = load_dataset(input_file, num_samples, clip_length)
 
 # Calculate max_length of the target tensors
 max_length_targ, max_length_inp = target_tensor.shape[1], input_tensor.shape[1]
@@ -167,6 +168,7 @@ EPOCHS = args.epochs
 # Save all settings
 options = {
     'num_samples': num_samples,
+    'clip_length': clip_length,
     'epochs': EPOCHS,
     'units': units,
     'embedding': embedding_dim
@@ -221,7 +223,7 @@ decoder.save_weights(os.path.join(OUT_DIR, 'decoder'))
 def evaluate(sentence):
     attention_plot = np.zeros((max_length_targ, max_length_inp))
 
-    sentence = preprocess_sentence(sentence)
+    sentence = preprocess_sentence(sentence, clip_length)
 
     inputs = [lang.word_index[i] for i in sentence]
     inputs = tf.keras.preprocessing.sequence.pad_sequences([inputs],
@@ -232,15 +234,15 @@ def evaluate(sentence):
     result = ''
 
     hidden = [tf.zeros((1, units))]
-    enc_out, enc_hidden, enc_c = encoder(inputs, hidden)
+    enc_out, enc_hidden, enc_c = encoder([inputs, hidden])
 
     dec_hidden = enc_hidden
     dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
 
     for t in range(max_length_targ):
-        predictions, dec_hidden, attention_weights = decoder(dec_input,
+        predictions, dec_hidden, attention_weights = decoder([dec_input,
                                                              dec_hidden,
-                                                             enc_out)
+                                                             enc_out])
 
         # storing the attention weights to plot later on
         attention_weights = tf.reshape(attention_weights, (-1, ))
@@ -266,3 +268,4 @@ def translate(sentence):
 
     attention_plot = attention_plot[:len(result.split(' ')), :len(sentence.split(' '))]
     # plot_attention(attention_plot, sentence.split(' '), result.split(' '))
+
