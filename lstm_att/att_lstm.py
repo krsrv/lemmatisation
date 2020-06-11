@@ -92,6 +92,9 @@ save_tokeniser(lang, os.path.join(OUT_DIR, 'tokenizer'))
 dataset = tf.data.Dataset.from_tensor_slices((input_tensor_train, target_tensor_train)).shuffle(BUFFER_SIZE)
 dataset = dataset.batch(BATCH_SIZE, drop_remainder=True)
 
+val_dataset = tf.data.Dataset.from_tensor_slices((input_tensor_val, target_tensor_val)).shuffle(BUFFER_SIZE)
+val_dataset = val_dataset.batch(BATCH_SIZE, drop_remainder=True)
+
 encoder = Encoder(vocab_inp_size, embedding_dim, units, BATCH_SIZE)
 
 # sample input
@@ -124,7 +127,7 @@ def loss_function(real, pred):
     return tf.reduce_mean(loss_)
 
 @tf.function
-def train_step(inp, targ, enc_hidden):
+def train_step(inp, targ, enc_hidden, validation=False):
     loss = 0
 
     with tf.GradientTape() as tape:
@@ -146,11 +149,12 @@ def train_step(inp, targ, enc_hidden):
 
     batch_loss = (loss / int(targ.shape[1]))
 
-    variables = encoder.trainable_variables + decoder.trainable_variables
+    if not validation:
+        variables = encoder.trainable_variables + decoder.trainable_variables
 
-    gradients = tape.gradient(loss, variables)
+        gradients = tape.gradient(loss, variables)
 
-    optimizer.apply_gradients(zip(gradients, variables))
+        optimizer.apply_gradients(zip(gradients, variables))
 
     return batch_loss
 
@@ -170,6 +174,8 @@ options = {
 json.dump(options, open(os.path.join(OUT_DIR, 'options.json'), 'w'))
 print('Files and logs saved to %s' % OUT_DIR)
 
+loss, val_loss = [], []
+
 for epoch in range(EPOCHS):
     start = time.time()
 
@@ -187,11 +193,26 @@ for epoch in range(EPOCHS):
     if epoch % 5 == 0 and epoch > 0:
         checkpoint.save(file_prefix = os.path.join(OUT_DIR, 'ckpt'))
 
-    print('Epoch {} Loss {:.4f}'.format(epoch + 1,
-                                      total_loss / steps_per_epoch))
-    logger.info('End of Epoch {} Loss {:.4f}'.format(epoch + 1,
-                                      total_loss / steps_per_epoch))
-    print('Time taken for 1 epoch {} sec\n'.format(time.time() - start))
+    loss.append(total_loss / steps_per_epoch)
+    print('Time taken for 1 epoch {} sec'.format(time.time() - start))
+    
+    # Calculate validation loss
+    enc_hidden = encoder.initialize_hidden_state()
+    val_total_loss = 0
+
+    for (batch, (inp, targ)) in enumerate(dataset.take(steps_per_epoch)):
+        batch_loss = train_step(inp, targ, enc_hidden, validation=True)
+        val_total_loss += batch_loss
+    
+    val_loss.append(val_total_loss / steps_per_epoch)
+    print('Epoch {} Loss {:.4f} Validation {:.4f}\n'.format(epoch + 1, loss[-1], val_loss[-1]))
+    logger.info('Epoch {} Loss {:.4f} Validation {:.4f}'.format(epoch + 1,
+                                      loss[-1], val_loss[-1]))
+
+with open(os.path.join(OUT_DIR, 'loss.csv'), 'w') as f:
+    f.write('epoch\tloss\tval_loss\n')
+    for i, (lo, vo) in enumerate(zip(loss, val_loss)):
+        f.write('{}\t{}\t{}\n'.format(i+1, lo, vo))
 
 checkpoint.save(file_prefix = os.path.join(OUT_DIR, 'ckpt'))
 encoder.save_weights(os.path.join(OUT_DIR, 'encoder'))
