@@ -11,20 +11,37 @@ import os
 import random
 import string
 import json
+from argparse import ArgumentParser
+
+def is_valid_file(parser, arg):
+    if not os.path.exists(arg):
+        parser.error("The file %s does not exist!" % arg)
+    return arg
+
+parser = ArgumentParser(description="Load character seq2seq model")
+parser.add_argument("--epochs", dest="epochs", required=False,
+                    help="number of epochs", default=100,
+                    type=int)
+parser.add_argument("--latent-dim", dest="latent_dim", required=False,
+                    help="path to options.json file", default=100,
+                    type=int)
+parser.add_argument("--clip-length", dest="clip_length", required=False,
+                    help="path to dict.json file", default=None,
+                    type=int)
+args = parser.parse_args()
 
 DATA_DIR = '../data/'
 batch_size = 10  # Batch size for training.
-epochs = 100  # Number of epochs to train for.
-latent_dim = 100  # Latent dimensionality of the encoding space.
+epochs = args.epochs  # Number of epochs to train for.
+latent_dim = args.latent_dim  # Latent dimensionality of the encoding space.
 num_samples = 10000 #10000  # Number of samples to train on.
 # Path to the data txt file on disk.
 data_path = DATA_DIR+'embeddings.hdf5'
 
 input_texts, target_texts = [], []
 input_characters, target_characters = set(), set()
-UNK = chr(19154)
 lemma_file = DATA_DIR+'train.csv'
-CLIP_LENGTH = int(sys.argv[1]) if len(sys.argv) == 2 else 100
+CLIP_LENGTH = args.clip_length if args.clip_length else 100
 
 OUT_BASE_DIR = '../model'
 OUT_DIR = os.path.join(OUT_BASE_DIR)
@@ -43,17 +60,15 @@ options = {
     'latent_dim': latent_dim,
     'num_samples': num_samples,
     'lemma_file': lemma_file,
-    'unk_tok': UNK
 }
 json.dump(options,
     open(os.path.join(OUT_DIR, 'options.json'), 'w'))
 
 with open(lemma_file, 'r') as f:
     for i, line in enumerate(f):
-        if i >= num_samples:
-            break
-        target_text = line.strip().split()[-1]
-        input_text = line.strip().split()[-2]
+        target_text = line.strip().split()[-1].replace('\u200d', '')
+        input_text = line.strip().split()[-2].replace('\u200d', '')
+        
         if len(input_text) > CLIP_LENGTH:
             target_text = target_text[-CLIP_LENGTH:]
             input_text = input_text[-CLIP_LENGTH:]
@@ -63,24 +78,29 @@ with open(lemma_file, 'r') as f:
         target_text = '\t' + target_text + '\n'
         target_texts.append(target_text)
 
+        for c in input_text:
+            input_characters.add(c)
+        for c in target_text:
+            target_characters.add(c)
+
+input_texts = input_texts[:num_samples]
+target_texts = target_texts[:num_samples]
+
 # Add Devanagari unicode
-devanagari = range(ord('\u0900'), ord('\u0950'))
+devanagari = list(range(ord('\u0900'), ord('\u0950'))) + list(range(ord('\u0968'), ord('\u0970')))
 devanagari = [chr(i) for i in devanagari]
 devanagari = set(devanagari)
-input_characters = devanagari.copy()
-target_characters = devanagari.copy()
+input_characters = input_characters.union(devanagari)
+target_characters = input_characters.union(devanagari)
 
 # Add <PAD>=' ', <START>='\t', <END>='\n',
-# <UNK>='chr(19154)'='䫒' to target_char
+# to target_char
 target_characters.add(' ')
 target_characters.add('\t')
 target_characters.add('\n')
-target_characters.add(UNK)
 
 # Add <PAD>=' ' to input_char
-# Add <UNK>='\r' to input_char
 input_characters.add(' ')
-input_characters.add(UNK)
 
 input_characters = sorted(list(input_characters))
 target_characters = sorted(list(target_characters))
@@ -115,17 +135,10 @@ decoder_target_data = np.zeros(
 
 for i, (input_text, target_text) in enumerate(zip(input_texts, target_texts)):
     for t, char in enumerate(input_text):
-        if char not in input_characters:
-            char = UNK
         encoder_input_data[i, t, input_token_index[char]] = 1.
     encoder_input_data[i, t + 1:, input_token_index[' ']] = 1.
     for t, char in enumerate(target_text):
         # decoder_target_data is ahead of decoder_input_data by one timestep
-        if char not in target_characters:
-            char = UNK
-        # If character in decoder target data is unknown, then
-        # change the input in next time-series to the character
-        # at same offset in input, or repeat the character before
         decoder_input_data[i, t, target_token_index[char]] = 1.
         if t > 0:
             # decoder_target_data will be ahead by one timestep
@@ -211,12 +224,6 @@ def decode_sequence(input_seq):
         sampled_token_index = np.argmax(output_tokens[0, -1, :])
         sampled_char = reverse_target_char_index[sampled_token_index]
         output_char = sampled_char
-        if sampled_char == UNK:
-            if len(decoded_sentence) < len(input_seq):
-                output_char = np.argmax(input_seq[0,len(decoded_sentence)])
-                output_char = reverse_input_char_index[output_char]
-            else:
-                output_char = decoded_sentence[-1]
         decoded_sentence += output_char
 
         # Exit condition: either hit max length

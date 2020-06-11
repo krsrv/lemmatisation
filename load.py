@@ -27,6 +27,9 @@ parser.add_argument("--options", dest="options", required=True,
 parser.add_argument("--dict", dest="dict", required=True,
                     help="path to dict.json file",
                     type=lambda x: is_valid_file(parser, x))
+parser.add_argument("--test-file", dest="test_file", required=False,
+                    help="path to space separated word-lemma pair file",
+                    type=lambda x: is_valid_file(parser, x), default=None)
 args = parser.parse_args()
 
 
@@ -35,17 +38,18 @@ latent_dim = options['latent_dim']
 num_samples = options['num_samples']
 CLIP_LENGTH = options['clip_length']
 lemma_file = options['lemma_file']
-UNK = options['unk_tok']
+test_file = args.test_file if args.test_file else lemma_file
+UNK = options['unk_tok'] if 'unk_tok' in options.keys() else None
 
 input_texts, target_texts = [], []
 input_characters, target_characters = set(), set()
 
-with open(lemma_file, 'r') as f:
+with open(test_file, 'r') as f:
     for i, line in enumerate(f):
-        if i <= num_samples:
-            continue
-        target_text = line.strip().split()[-1]
-        input_text = line.strip().split()[-2]
+        #if i <= num_samples:
+        #    continue
+        target_text = line.strip().split()[-1].replace('\u200d','')
+        input_text = line.strip().split()[-2].replace('\u200d','')
         if len(input_text) > CLIP_LENGTH:
             target_text = target_text[-CLIP_LENGTH:]
             input_text = input_text[-CLIP_LENGTH:]
@@ -65,8 +69,12 @@ reverse_input_char_index = dict(
 reverse_target_char_index = dict(
     (i, char) for char, i in target_token_index.items())
 
+input_characters = set(char for char, i in input_token_index.items())
+target_characters = set(char for char, i in target_token_index.items())
+
 num_encoder_tokens = len(input_token_index)
 num_decoder_tokens = len(target_token_index)
+
 
 encoder_input_data = np.zeros(
     (len(input_texts), max_encoder_seq_length, num_encoder_tokens),
@@ -74,7 +82,7 @@ encoder_input_data = np.zeros(
 for i, (input_text, target_text) in enumerate(zip(input_texts, target_texts)):
     for t, char in enumerate(input_text):
         if char not in input_characters:
-            char = UNK
+            raise ValueError('Invalid char %s in %s' % (char, input_text))
         encoder_input_data[i, t, input_token_index[char]] = 1.
     encoder_input_data[i, t + 1:, input_token_index[' ']] = 1.
 
@@ -164,12 +172,10 @@ def input_format(word):
         input_data[i, t, input_token_index[char]] = 1.
     encoder_input_data[i, t + 1:, input_token_index[' ']] = 1.
 
-for seq_index in range(10):
+for seq_index in range(min(len(encoder_input_data)-2, 100000000)):
     # Take one sequence (part of the training set)
     # for trying out decoding.
     input_seq = encoder_input_data[seq_index: seq_index + 1]
     decoded_sentence = decode_sequence(input_seq)
     
-    print('-')
-    print('Input sentence:', input_texts[seq_index])
-    print('Decoded sentence:', decoded_sentence)
+    print(input_texts[seq_index].strip(), '\t', decoded_sentence.strip())
