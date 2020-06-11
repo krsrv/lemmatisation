@@ -1,4 +1,5 @@
 import tensorflow as tf
+tf.get_logger().setLevel('ERROR')
 
 class BahdanauAttention(tf.keras.layers.Layer):
     def __init__(self, units):
@@ -42,8 +43,8 @@ class Encoder(tf.keras.Model):
 
     def call(self, x, hidden):
         x = self.embedding(x)
-        output, state = self.lstm(x, initial_state = hidden)
-        return output, state
+        output, state_h, state_c = self.lstm(x)
+        return output, state_h, state_c
 
     def initialize_hidden_state(self):
         return tf.zeros((self.batch_sz, self.enc_units))
@@ -74,7 +75,7 @@ class Decoder(tf.keras.Model):
         x = tf.concat([tf.expand_dims(context_vector, 1), x], axis=-1)
 
         # passing the concatenated vector to the GRU
-        output, state = self.lstm(x)
+        output, state_h, state_c = self.lstm(x)
 
         # output shape == (batch_size * 1, hidden_size)
         output = tf.reshape(output, (-1, output.shape[2]))
@@ -82,4 +83,4 @@ class Decoder(tf.keras.Model):
         # output shape == (batch_size, vocab)
         x = self.fc(output)
 
-        return x, state, attention_weights
+        return x, state_h, attention_weights

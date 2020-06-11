@@ -1,63 +1,60 @@
-import tensorflow as tf
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
+import tensorflow as tf
+tf.get_logger().setLevel('ERROR')
+
 from sklearn.model_selection import train_test_split
 
-import unicodedata
-import re
+from argparse import ArgumentParser
 import numpy as np
-import os
-import io
 import time
+import random
+import string
+import json
+import logging
 
-from .att_module import Encoder, BahdanauAttention, Decoder
+from att_module import Encoder, BahdanauAttention, Decoder
+from helper import *
 
-def preprocess_sentence(w):
-    w = w.strip()
-    w = re.sub(r'[" "]+', " ", w)
+parser = ArgumentParser(description="Load character seq2seq model")
+parser.add_argument("--num-samples", dest="num_samples", required=False,
+                    help="number of epochs", default=10000,
+                    type=int)
+parser.add_argument("--epochs", dest="epochs", required=False,
+                    help="number of epochs", default=100,
+                    type=int)
+parser.add_argument("--latent-dim", dest="latent_dim", required=False,
+                    help="path to options.json file", default=100,
+                    type=int)
+parser.add_argument("--clip-length", dest="clip_length", required=False,
+                    help="path to dict.json file", default=None,
+                    type=int)
+args = parser.parse_args()
 
-    # replacing everything with space except (ऀ-ॏ, ०-९ ".", "-")
-    w = re.sub(r'[^\u0900-\u094f\u0966-\u096f?,.-]+', "", w)
+# Create new output directory
+OUT_BASE_DIR = '../att_model'
+OUT_DIR = os.path.join(OUT_BASE_DIR)
+while os.path.exists(OUT_DIR):
+    out_folder = ''.join(random.choices(string.ascii_lowercase +
+                             string.digits, k = 8))
+    OUT_DIR = os.path.join(OUT_BASE_DIR, out_folder)
+os.mkdir(OUT_DIR)
 
-    # adding a start and an end token to the sentence
-    # so that the model know when to start and stop predicting.
-    w = '<start>' + w + '<end>'
-    return w
+# Set up logger
+logger = logging.getLogger('training')
+hdlr = logging.FileHandler(os.path.join(OUT_DIR, 'training.log'))
+formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+hdlr.setFormatter(formatter)
+logger.addHandler(hdlr)
+logger.setLevel(logging.ERROR)
 
-# 1. Remove the accents
-# 2. Clean the sentences
-# 3. Return word pairs in the format: [Word, Lemma]
-def create_dataset(path, num_examples):
-    lines = io.open(path, encoding='UTF-8').read().strip().split('\n')
-    word_pairs = [[preprocess_sentence(w) for w in l.split()]  
-        for l in lines[:num_examples]]
+# Start and End tokens - check in helper.py too
+START_TOK, END_TOK = '<', '>'
 
-    return zip(*word_pairs)
-
-def tokenize(lang):
-    lang_tokenizer = tf.keras.preprocessing.text.Tokenizer(
-        filters='', lower=False)
-    lang_tokenizer.fit_on_texts(lang)
-
-    tensor = lang_tokenizer.texts_to_sequences(lang)
-    tensor = tf.keras.preprocessing.sequence.pad_sequences(tensor,
-        padding='post')
-
-    return tensor, lang_tokenizer
-
-def load_dataset(path, num_examples=None):
-    # creating cleaned input, output pairs
-    targ_word, inp_word = create_dataset(path, num_examples)
-
-    input_tensor, inp_lang_tokenizer = tokenize(inp_lang)
-    target_tensor, targ_lang_tokenizer = tokenize(targ_lang)
-
-    return input_tensor, target_tensor, inp_lang_tokenizer, targ_lang_tokenizer
-
-num_examples = 10000
-input_tensor, target_tensor, inp_lang, targ_lang = load_dataset(
-    path_to_file, num_examples)
+num_samples = args.num_samples
+input_file = '../data/train.csv'
+input_tensor, target_tensor, lang = load_dataset(input_file, num_samples)
 
 # Calculate max_length of the target tensors
 max_length_targ, max_length_inp = target_tensor.shape[1], input_tensor.shape[1]
@@ -69,19 +66,25 @@ input_tensor_train, input_tensor_val, target_tensor_train, target_tensor_val = \
 # Show length
 print(len(input_tensor_train), len(target_tensor_train), 
     len(input_tensor_val), len(target_tensor_val))
-
-def convert(lang, tensor):
-    for t in tensor:
-        if t!=0:
-            print ("%d ----> %s" % (t, lang.index_word[t]))
+logger.debug('training (input, target) tensor %d %d' % (
+    len(input_tensor_train), len(target_tensor_train)))
+logger.debug('validating (input, target) tensor %d %d' % (
+    len(input_tensor_val), len(target_tensor_val)))
 
 BUFFER_SIZE = len(input_tensor_train)
 BATCH_SIZE = 64
 steps_per_epoch = len(input_tensor_train)//BATCH_SIZE
-embedding_dim = 256
-units = 1024
-vocab_inp_size = len(inp_lang.word_index)+1
-vocab_tar_size = len(targ_lang.word_index)+1
+embedding_dim = args.latent_dim
+units = args.latent_dim
+vocab_inp_size = len(lang.word_index)+1
+vocab_tar_size = len(lang.word_index)+1
+
+logger.debug('vocabulary size %d' % (len(lang.word_index)+1))
+logger.debug('Units %d' % units)
+logger.debug('Embedding dim %d' % embedding_dim)
+logger.debug('Batch size %d' % BATCH_SIZE)
+
+save_tokeniser(lang, os.path.join(OUT_DIR, 'tokenizer'))
 
 dataset = tf.data.Dataset.from_tensor_slices((input_tensor_train, target_tensor_train)).shuffle(BUFFER_SIZE)
 dataset = dataset.batch(BATCH_SIZE, drop_remainder=True)
@@ -89,17 +92,20 @@ dataset = dataset.batch(BATCH_SIZE, drop_remainder=True)
 encoder = Encoder(vocab_inp_size, embedding_dim, units, BATCH_SIZE)
 
 # sample input
-sample_hidden = encoder.initialize_hidden_state()
-sample_output, sample_hidden = encoder(example_input_batch, sample_hidden)
-print ('Encoder output shape: (batch size, sequence length, units) {}'.format(sample_output.shape))
-print ('Encoder Hidden state shape: (batch size, units) {}'.format(sample_hidden.shape))
+# example_input_batch, example_target_batch = next(iter(dataset))
+# example_input_batch.shape, example_target_batch.shape
+# 
+# sample_hidden = encoder.initialize_hidden_state()
+# sample_output, sample_hidden, _ = encoder(example_input_batch, [sample_hidden, sample_hidden])
+# print ('Encoder output shape: (batch size, sequence length, units) {}'.format(sample_output.shape))
+# print ('Encoder Hidden state shape: (batch size, units) {}'.format(sample_hidden.shape))
 
 decoder = Decoder(vocab_tar_size, embedding_dim, units, BATCH_SIZE)
 
-sample_decoder_output, _, _ = decoder(tf.random.uniform((BATCH_SIZE, 1)),
-                                      sample_hidden, sample_output)
-
-print ('Decoder output shape: (batch_size, vocab size) {}'.format(sample_decoder_output.shape))
+# sample_decoder_output, _, _ = decoder(tf.random.uniform((BATCH_SIZE, 1)),
+#                                       sample_hidden, sample_output)
+# 
+# print ('Decoder output shape: (batch_size, vocab size) {}'.format(sample_decoder_output.shape))
 
 optimizer = tf.keras.optimizers.Adam()
 loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
@@ -119,11 +125,11 @@ def train_step(inp, targ, enc_hidden):
     loss = 0
 
     with tf.GradientTape() as tape:
-        enc_output, enc_hidden = encoder(inp, enc_hidden)
+        enc_output, enc_hidden, _ = encoder(inp, enc_hidden)
 
         dec_hidden = enc_hidden
 
-        dec_input = tf.expand_dims([targ_lang.word_index['<start>']] * BATCH_SIZE, 1)
+        dec_input = tf.expand_dims([lang.word_index[START_TOK]] * BATCH_SIZE, 1)
 
         # Teacher forcing - feeding the target as the next input
         for t in range(1, targ.shape[1]):
@@ -145,7 +151,21 @@ def train_step(inp, targ, enc_hidden):
 
     return batch_loss
 
-EPOCHS = 10
+checkpoint = tf.train.Checkpoint(optimizer=optimizer,
+                                 encoder=encoder,
+                                 decoder=decoder)
+
+EPOCHS = args.epochs
+
+# Save all settings
+options = {
+    'num_samples': num_samples,
+    'epochs': EPOCHS,
+    'units': units,
+    'embedding': embedding_dim
+}
+json.dump(options, open(os.path.join(OUT_DIR, 'options.json'), 'w'))
+print('Files and logs saved to %s' % OUT_DIR)
 
 for epoch in range(EPOCHS):
     start = time.time()
@@ -158,23 +178,28 @@ for epoch in range(EPOCHS):
         total_loss += batch_loss
 
         if batch % 100 == 0:
-            print('Epoch {} Batch {} Loss {:.4f}'.format(epoch + 1,
+            logger.info('Epoch {} Batch {} Loss {:.4f}'.format(epoch + 1,
                                                    batch,
                                                    batch_loss.numpy()))
-    # saving (checkpoint) the model every 2 epochs
-    if (epoch + 1) % 2 == 0:
-    checkpoint.save(file_prefix = checkpoint_prefix)
+    if epoch % 5 == 0 and epoch > 0:
+        checkpoint.save(file_prefix = OUT_DIR)
 
     print('Epoch {} Loss {:.4f}'.format(epoch + 1,
                                       total_loss / steps_per_epoch))
+    logger.info('End of Epoch {} Loss {:.4f}'.format(epoch + 1,
+                                      total_loss / steps_per_epoch))
     print('Time taken for 1 epoch {} sec\n'.format(time.time() - start))
+
+checkpoint.save(file_prefix = OUT_DIR)
+# tf.saved_model.save(encoder, os.path.join(OUT_DIR, 'encoder'))
+# tf.saved_model.save(decoder, os.path.join(OUT_DIR, 'decoder'))
 
 def evaluate(sentence):
     attention_plot = np.zeros((max_length_targ, max_length_inp))
 
     sentence = preprocess_sentence(sentence)
 
-    inputs = [inp_lang.word_index[i] for i in sentence.split(' ')]
+    inputs = [lang.word_index[i] for i in sentence]
     inputs = tf.keras.preprocessing.sequence.pad_sequences([inputs],
                                                          maxlen=max_length_inp,
                                                          padding='post')
@@ -183,10 +208,10 @@ def evaluate(sentence):
     result = ''
 
     hidden = [tf.zeros((1, units))]
-    enc_out, enc_hidden = encoder(inputs, hidden)
+    enc_out, enc_hidden, enc_c = encoder(inputs, hidden)
 
     dec_hidden = enc_hidden
-    dec_input = tf.expand_dims([targ_lang.word_index['<start>']], 0)
+    dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
 
     for t in range(max_length_targ):
         predictions, dec_hidden, attention_weights = decoder(dec_input,
@@ -199,9 +224,9 @@ def evaluate(sentence):
 
         predicted_id = tf.argmax(predictions[0]).numpy()
 
-        result += targ_lang.index_word[predicted_id] + ' '
+        result += lang.index_word[predicted_id]
 
-        if targ_lang.index_word[predicted_id] == '<end>':
+        if lang.index_word[predicted_id] == END_TOK:
             return result, sentence, attention_plot
 
         # the predicted ID is fed back into the model
@@ -216,4 +241,4 @@ def translate(sentence):
     print('Predicted translation: {}'.format(result))
 
     attention_plot = attention_plot[:len(result.split(' ')), :len(sentence.split(' '))]
-    plot_attention(attention_plot, sentence.split(' '), result.split(' '))
+    # plot_attention(attention_plot, sentence.split(' '), result.split(' '))
