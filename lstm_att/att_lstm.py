@@ -27,6 +27,9 @@ parser.add_argument("--epochs", dest="epochs", required=False,
 parser.add_argument("--latent-dim", dest="latent_dim", required=False,
                     help="path to options.json file", default=100,
                     type=int)
+parser.add_argument("--embed-dim", dest="embed_dim", required=False,
+                    help="path to options.json file", default=100,
+                    type=int)
 parser.add_argument("--clip-length", dest="clip_length", required=False,
                     help="path to dict.json file", default=None,
                     type=int)
@@ -47,7 +50,7 @@ hdlr = logging.FileHandler(os.path.join(OUT_DIR, 'training.log'))
 formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 hdlr.setFormatter(formatter)
 logger.addHandler(hdlr)
-logger.setLevel(logging.ERROR)
+logger.setLevel(logging.DEBUG)
 
 # Start and End tokens - check in helper.py too
 START_TOK, END_TOK = '<', '>'
@@ -74,7 +77,7 @@ logger.debug('validating (input, target) tensor %d %d' % (
 BUFFER_SIZE = len(input_tensor_train)
 BATCH_SIZE = 64
 steps_per_epoch = len(input_tensor_train)//BATCH_SIZE
-embedding_dim = args.latent_dim
+embedding_dim = args.embed_dim
 units = args.latent_dim
 vocab_inp_size = len(lang.word_index)+1
 vocab_tar_size = len(lang.word_index)+1
@@ -125,7 +128,7 @@ def train_step(inp, targ, enc_hidden):
     loss = 0
 
     with tf.GradientTape() as tape:
-        enc_output, enc_hidden, _ = encoder(inp, enc_hidden)
+        enc_output, enc_hidden, _ = encoder([inp, enc_hidden])
 
         dec_hidden = enc_hidden
 
@@ -134,7 +137,7 @@ def train_step(inp, targ, enc_hidden):
         # Teacher forcing - feeding the target as the next input
         for t in range(1, targ.shape[1]):
             # passing enc_output to the decoder
-            predictions, dec_hidden, _ = decoder(dec_input, dec_hidden, enc_output)
+            predictions, dec_hidden, _ = decoder([dec_input, dec_hidden, enc_output])
 
             loss += loss_function(targ[:, t], predictions)
 
@@ -182,7 +185,7 @@ for epoch in range(EPOCHS):
                                                    batch,
                                                    batch_loss.numpy()))
     if epoch % 5 == 0 and epoch > 0:
-        checkpoint.save(file_prefix = OUT_DIR)
+        checkpoint.save(file_prefix = os.path.join(OUT_DIR, 'ckpt'))
 
     print('Epoch {} Loss {:.4f}'.format(epoch + 1,
                                       total_loss / steps_per_epoch))
@@ -190,9 +193,9 @@ for epoch in range(EPOCHS):
                                       total_loss / steps_per_epoch))
     print('Time taken for 1 epoch {} sec\n'.format(time.time() - start))
 
-checkpoint.save(file_prefix = OUT_DIR)
-# tf.saved_model.save(encoder, os.path.join(OUT_DIR, 'encoder'))
-# tf.saved_model.save(decoder, os.path.join(OUT_DIR, 'decoder'))
+checkpoint.save(file_prefix = os.path.join(OUT_DIR, 'ckpt'))
+encoder.save_weights(os.path.join(OUT_DIR, 'encoder'))
+decoder.save_weights(os.path.join(OUT_DIR, 'decoder'))
 
 def evaluate(sentence):
     attention_plot = np.zeros((max_length_targ, max_length_inp))
