@@ -1,0 +1,5 @@
+### 20-06-10
+Using 'UNK' token makes the model predict UNK more often than not. At the time though, the input in the testing phase did wer not properly constructed (encoding_input_data did not have the PAD token set for sequences which were shorter than the max sequence). Regardless, will check this after the model without the UNK token works sufficiently well (required high accuracy)
+
+### 20-06-11
+The best performing so far while experimenting with whether to use clip-length or not, changing epochs and latent dimension size, the best one yet is clip-length 8, epochs 100 and latent dimension 100. Further running tests on various clip lengths. The current outputs suggest that the information of the beginning of the sequence (or in some cases the end of the sequence) is lost. Looks like an attention over LSTM might help.
