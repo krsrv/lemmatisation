@@ -17,7 +17,7 @@ import logging
 from att_module import Encoder, BahdanauAttention, Decoder
 from helper import *
 
-parser = argparse.ArgumentParser(description="Load character seq2seq model", 
+parser = argparse.ArgumentParser(description="Train character seq2seq model", 
                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument("--num-samples", dest="num_samples", required=False,
                     help="max number of samples for training", default=10000,
@@ -122,6 +122,8 @@ optimizer = tf.keras.optimizers.Adam()
 loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
     from_logits=True, reduction='none')
 
+EPOCHS = args.epochs
+
 def loss_function(real, pred):
     mask = tf.math.logical_not(tf.math.equal(real, 0))
     loss_ = loss_object(real, pred)
@@ -163,25 +165,9 @@ def train_step(inp, targ, enc_hidden, validation=False):
 
     return batch_loss
 
-checkpoint = tf.train.Checkpoint(optimizer=optimizer,
-                                 encoder=encoder,
-                                 decoder=decoder)
-
-EPOCHS = args.epochs
-
-# Save all settings
-options = {
-    'num_samples': num_samples,
-    'clip_length': clip_length,
-    'epochs': EPOCHS,
-    'units': units,
-    'embedding': embedding_dim
-}
-json.dump(options, open(os.path.join(OUT_DIR, 'options.json'), 'w'))
-print('Files and logs saved to %s' % OUT_DIR)
-
-def evaluate(sentence):
-    attention_plot = np.zeros((max_length_targ, max_length_inp))
+def evaluate(sentence, attention_output=False):
+    if attention_output:
+        attention_plot = np.zeros((max_length_targ, max_length_inp))
 
     sentence = preprocess_sentence(sentence, clip_length)
 
@@ -204,22 +190,49 @@ def evaluate(sentence):
                                                              dec_hidden,
                                                              enc_out)
 
-        # storing the attention weights to plot later on
-        attention_weights = tf.reshape(attention_weights, (-1, ))
-        attention_plot[t] = attention_weights.numpy()
+        if attention_output:
+            # storing the attention weights to plot later on
+            attention_weights = tf.reshape(attention_weights, (-1, ))
+            attention_plot[t] = attention_weights.numpy()
 
         predicted_id = tf.argmax(predictions[0]).numpy()
 
         result += lang.index_word[predicted_id]
 
         if lang.index_word[predicted_id] == END_TOK:
-            return result, sentence, attention_plot
+            if attention_output:
+                return result, sentence, attention_plot
+            else:
+                return result, sentence
 
         # the predicted ID is fed back into the model
         dec_input = tf.expand_dims([predicted_id], 0)
 
-    return result, sentence, attention_plot
+    if attention_output:
+        return result, sentence, attention_plot
+    else:
+        return result, sentence
 
+# Set up checkpoints
+checkpoint = tf.train.Checkpoint(step=tf.Variable(1),
+                                 optimizer=optimizer,
+                                 encoder=encoder,
+                                 decoder=decoder)
+manager = tf.train.CheckpointManager(checkpoint, OUT_DIR, max_to_keep=3)
+
+# Save all settings
+options = {
+    'num_samples': num_samples,
+    'clip_length': clip_length,
+    'epochs': EPOCHS,
+    'units': units,
+    'embedding': embedding_dim,
+    'batch_size': BATCH_SIZE,
+    'max_length_inp': max_length_inp,
+    'max_length_targ': max_length_targ
+}
+json.dump(options, open(os.path.join(OUT_DIR, 'options.json'), 'w'))
+print('Files and logs saved to %s' % OUT_DIR)
 
 loss, val_loss = [], []
 
@@ -237,8 +250,11 @@ for epoch in range(EPOCHS):
             logger.info('Epoch {} Batch {} Loss {:.4f}'.format(epoch + 1,
                                                    batch,
                                                    batch_loss.numpy()))
-    if epoch % 5 == 0 and epoch > 0:
-        checkpoint.save(file_prefix = os.path.join(OUT_DIR, 'ckpt'))
+    
+    # Update checkpoint step variable and save
+    checkpoint.step.assign_add(1)
+    if epoch % 10 == 0 and epoch > 0:
+        manager.save()
 
     loss.append(total_loss / steps_per_epoch)
     print('Time taken for 1 epoch {} sec'.format(time.time() - start))
@@ -261,7 +277,7 @@ with open(os.path.join(OUT_DIR, 'loss.csv'), 'w') as f:
     for i, (lo, vo) in enumerate(zip(loss, val_loss)):
         f.write('{}\t{}\t{}\n'.format(i+1, lo, vo))
 
-checkpoint.save(file_prefix = os.path.join(OUT_DIR, 'ckpt'))
+manager.save()
 encoder.save_weights(os.path.join(OUT_DIR, 'encoder'))
 decoder.save_weights(os.path.join(OUT_DIR, 'decoder'))
 
