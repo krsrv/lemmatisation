@@ -299,7 +299,7 @@ with open('../data/test.csv', 'r') as f, open(os.path.join(OUT_DIR, 'test.csv'),
             break
         line = line.strip()
         _, word, lemma = line.split()
-        out, inp, _ = evaluate(word)
+        out, inp = evaluate(word)
         out, inp = out[:-1], inp[1:-1]
         if clip_length is None:
             if out == lemma:
@@ -324,7 +324,7 @@ with open('../data/train.csv', 'r') as f, open(os.path.join(OUT_DIR, 'train.csv'
             break
         line = line.strip()
         _, word, lemma = line.split()
-        out, inp, _ = evaluate(word)
+        out, inp = evaluate(word)
         out, inp = out[:-1], inp[1:-1]
         if clip_length is None:
             if out == lemma:
