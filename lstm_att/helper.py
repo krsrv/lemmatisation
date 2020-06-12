@@ -13,7 +13,7 @@ def preprocess_sentence(w, clip_length=None):
     w = re.sub(r'[" "]+', " ", w)
 
     # replacing everything with space except (ऀ-ॏ, ०-९ ".", "-")
-    w = re.sub(r'[^\u0900-\u094f\u0966-\u096f?,.-]+', "", w)
+    w = re.sub(r'[^\u0900-\u094f\u0958-\u096f?,.-]+', "", w)
     
     if clip_length:
         w = w[-clip_length:]
@@ -54,7 +54,7 @@ def load_dataset(path, num_examples=None, clip_length=None):
     # Load all devanagari characters in tokenizer
     chars = []
     chars.append(''.join([chr(x) for x in range(ord('\u0900'),ord('\u094f'))]))
-    chars.append(''.join([chr(x) for x in range(ord('\u0966'),ord('\u096f'))]))
+    chars.append(''.join([chr(x) for x in range(ord('\u0958'),ord('\u096f'))]))
     chars.append('?.,-')  # Punctuation marks
     chars.append('<>')  # Start and end tokens
 
