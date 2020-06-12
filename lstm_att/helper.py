@@ -49,7 +49,7 @@ def tokenize(lang, lang_tokenizer=None):
 
 def load_dataset(path, num_examples=None, clip_length=None):
     # creating cleaned input, output pairs
-    targ_lang, inp_lang = create_dataset(path, num_examples, clip_length)
+    inp_lang, targ_lang = create_dataset(path, num_examples, clip_length)
 
     # Load all devanagari characters in tokenizer
     chars = []

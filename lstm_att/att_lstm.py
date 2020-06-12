@@ -255,7 +255,6 @@ for epoch in range(EPOCHS):
     print('Epoch {} Loss {:.4f} Validation {:.4f}'.format(epoch + 1, loss[-1], val_loss[-1]))
     logger.info('Epoch {} Loss {:.4f} Validation {:.4f}'.format(epoch + 1,
                                       loss[-1], val_loss[-1]))
-    print('{}\t{}\t\t{}\t{}\n'.format('की', evaluate('की')[0], 'इसे', evaluate('इसे')[0]))
 
 with open(os.path.join(OUT_DIR, 'loss.csv'), 'w') as f:
     f.write('epoch\tloss\tval_loss\n')

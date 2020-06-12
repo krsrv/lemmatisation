@@ -8,11 +8,6 @@ class BahdanauAttention(tf.keras.layers.Layer):
         self.W2 = tf.keras.layers.Dense(units)
         self.V = tf.keras.layers.Dense(1)
 
-    # Changed signature for compatibility with save function
-    # def call(self, inp, training=False):
-    #    query, values = inp
-    #    return self.call(query, values)
-
     def call(self, query, values):
         # query hidden state shape == (batch_size, hidden size)
         # query_with_time_axis shape == (batch_size, 1, hidden size)
@@ -45,11 +40,6 @@ class Encoder(tf.keras.Model):
                                        return_sequences=True,
                                        return_state=True)
 
-    # Changed signature for compatibility with save function
-    # def call(self, inp, training=False):
-    #    x, hidden = inp
-    #    return self.call(x, hidden)
-
     def call(self, x, hidden):
         x = self.embedding(x)
         output, state_h, state_c = self.lstm(x)
@@ -71,11 +61,6 @@ class Decoder(tf.keras.Model):
 
         # used for attention
         self.attention = BahdanauAttention(self.dec_units)
-
-    # Changed signature for compatibility with save function
-    # def call(self, inp, training=False):
-    #    x, hidden, enc_output = inp
-    #    return self.call(x, hidden, enc_output)
 
     def call(self, x, hidden, enc_output):
         # enc_output shape == (batch_size, max_length, hidden_size)
