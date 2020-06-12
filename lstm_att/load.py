@@ -20,10 +20,10 @@ parser.add_argument("--dir", dest="dir", required=False,
                     help="directory where files are stored", default='.',
                     type=str)
 parser.add_argument("--use-weights", dest="use_weights", required=False,
-                    help="number of epochs", default=False,
-                    type=bool)
+                    help="use weight files if enabled. Otherwise checkpoints are used for loading models",
+                    action='store_true')
 parser.add_argument("--test-file", dest="test_file", required=False,
-                    help="number of epochs", default=None,
+                    help="if supplied, run tests on given file", default=None,
                     type=str)
 args = parser.parse_args()
 
@@ -41,8 +41,11 @@ max_length_targ = options['max_length_targ'] \
     if 'max_length_targ' in options.keys() else 15
 max_length_inp = options['max_length_inp'] \
     if 'max_length_inp' in options.keys() else 15
+clip_length = options['clip_length'] \
+    if 'clip_length' in options.keys() else None
 
-EPOCHS = args.epochs
+EPOCHS = options['epochs'] \
+    if 'epochs' in options.keys() else 100
 BATCH_SIZE = options['batch_size'] \
     if 'batch_size' in options.keys() else 10
 embedding_dim = options['embedding']
@@ -138,14 +141,16 @@ checkpoint = tf.train.Checkpoint(step=tf.Variable(1),
                                  optimizer=optimizer,
                                  encoder=encoder,
                                  decoder=decoder)
-manager = tf.train.CheckpointManager(checkpoint, args.dir, max_to_keep=3)
+# manager = tf.train.CheckpointManager(checkpoint, os.path.join(args.dir, 'tf_ckpts'), max_to_keep=3)
+latest_ckpt = tf.train.latest_checkpoint(os.path.join(args.dir, 'tf_ckpts'))
 
 if args.use_weights:
-    checkpoint.restore(manager.latest_checkpoint)
-    if manager.latest_checkpoint:
-        print("Restored from {}".format(manager.latest_checkpoint))
-    else:
-        print("Checkpoint not foundInitializing from scratch.")
+    encoder.load_weights(os.path.join(args.dir, 'encoder', 'enc-wt'))
+    decoder.load_weights(os.path.join(args.dir, 'decoder', 'dec-wt'))
+    print("Restored from {}/(encoder, decoder)".format(args.dir))
 else:
-    encoder.load_weights(os.path.join(args.dir, 'encoder'))
-    decoder.load_weights(os.path.join(args.dir, 'decoder'))
+    checkpoint.restore(latest_ckpt)
+    if latest_ckpt:
+        print("Restored from {}".format(latest_ckpt))
+    else:
+        print("Checkpoint not found. Initializing from scratch.")

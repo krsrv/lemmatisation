@@ -1,5 +1,5 @@
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = "3"
 
 import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
@@ -218,7 +218,8 @@ checkpoint = tf.train.Checkpoint(step=tf.Variable(1),
                                  optimizer=optimizer,
                                  encoder=encoder,
                                  decoder=decoder)
-manager = tf.train.CheckpointManager(checkpoint, OUT_DIR, max_to_keep=3)
+manager = tf.train.CheckpointManager(checkpoint,
+     os.path.join(OUT_DIR, 'tf_ckpts'), max_to_keep=3)
 
 # Save all settings
 options = {
@@ -278,9 +279,12 @@ with open(os.path.join(OUT_DIR, 'loss.csv'), 'w') as f:
         f.write('{}\t{}\t{}\n'.format(i+1, lo, vo))
 
 manager.save()
-encoder.save_weights(os.path.join(OUT_DIR, 'encoder'))
-decoder.save_weights(os.path.join(OUT_DIR, 'decoder'))
 
+# Dump weights as well
+os.makedirs(os.path.join(OUT_DIR, 'encoder'), exist_ok=True)
+os.makedirs(os.path.join(OUT_DIR, 'decoder'), exist_ok=True)
+encoder.save_weights(os.path.join(OUT_DIR, 'encoder', 'enc-wt'))
+decoder.save_weights(os.path.join(OUT_DIR, 'decoder', 'dec-wt'))
 
 def translate(sentence):
     result, sentence, attention_plot = evaluate(sentence)
