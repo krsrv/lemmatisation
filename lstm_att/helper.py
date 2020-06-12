@@ -1,4 +1,5 @@
 import tensorflow as tf
+import numpy as np
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
@@ -33,12 +34,12 @@ def create_dataset(path, num_examples, clip_length):
 
     return zip(*word_pairs)
 
-def tokenize(lang, tokenizer=None):
-    lang_tokenizer = tokenizer
+def tokenize(lang, lang_tokenizer=None):
+    # If tokenizer is supplied, assume that it is already fit to the input lang
     if lang_tokenizer is None:
         lang_tokenizer = tf.keras.preprocessing.text.Tokenizer(
             filters='', lower=False, char_level=True)
-    lang_tokenizer.fit_on_texts(lang)
+        lang_tokenizer.fit_on_texts(lang)
 
     tensor = lang_tokenizer.texts_to_sequences(lang)
     tensor = tf.keras.preprocessing.sequence.pad_sequences(tensor,
@@ -50,16 +51,21 @@ def load_dataset(path, num_examples=None, clip_length=None):
     # creating cleaned input, output pairs
     targ_lang, inp_lang = create_dataset(path, num_examples, clip_length)
 
-    # since we are working on the same language, the same char set
-    # works for both input and target language
-    input_tensor, inp_lang_tokenizer = tokenize(inp_lang)
-    target_tensor, lang_tokenizer = tokenize(targ_lang, inp_lang_tokenizer)
-
     # Load all devanagari characters in tokenizer
     chars = []
     chars.append(''.join([chr(x) for x in range(ord('\u0900'),ord('\u094f'))]))
     chars.append(''.join([chr(x) for x in range(ord('\u0966'),ord('\u096f'))]))
+    chars.append('?.,-')  # Punctuation marks
+    chars.append('<>')  # Start and end tokens
+
+    lang_tokenizer = tf.keras.preprocessing.text.Tokenizer(
+            filters='', lower=False, char_level=True)
     lang_tokenizer.fit_on_texts(chars)
+
+    # since we are working on the same language, the same char set
+    # works for both input and target language
+    input_tensor, _ = tokenize(inp_lang, lang_tokenizer)
+    target_tensor, _ = tokenize(targ_lang, lang_tokenizer)
 
     return input_tensor, target_tensor, lang_tokenizer
 
@@ -93,3 +99,6 @@ def plot_attention(attention, sentence, predicted_sentence):
     ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
 
     plt.show()
+
+def get_number_training_vars(module):
+    return np.sum([np.prod(v.get_shape().as_list()) for v in module.trainable_variables])

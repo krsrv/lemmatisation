@@ -9,11 +9,11 @@ class BahdanauAttention(tf.keras.layers.Layer):
         self.V = tf.keras.layers.Dense(1)
 
     # Changed signature for compatibility with save function
-    def call(self, inp, training=False):
-        query, values = inp
+    # def call(self, inp, training=False):
+    #    query, values = inp
     #    return self.call(query, values)
 
-    # def call(self, query, values):
+    def call(self, query, values):
         # query hidden state shape == (batch_size, hidden size)
         # query_with_time_axis shape == (batch_size, 1, hidden size)
         # values shape == (batch_size, max_len, hidden size)
@@ -43,15 +43,14 @@ class Encoder(tf.keras.Model):
         self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
         self.lstm = tf.keras.layers.LSTM(self.enc_units,
                                        return_sequences=True,
-                                       return_state=True,
-                                       recurrent_initializer='glorot_uniform')
+                                       return_state=True)
 
     # Changed signature for compatibility with save function
-    def call(self, inp, training=False):
-        x, hidden = inp
+    # def call(self, inp, training=False):
+    #    x, hidden = inp
     #    return self.call(x, hidden)
 
-    # def call(self, x, hidden):
+    def call(self, x, hidden):
         x = self.embedding(x)
         output, state_h, state_c = self.lstm(x)
         return output, state_h, state_c
@@ -67,21 +66,20 @@ class Decoder(tf.keras.Model):
         self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
         self.lstm = tf.keras.layers.LSTM(self.dec_units,
                                        return_sequences=True,
-                                       return_state=True,
-                                       recurrent_initializer='glorot_uniform')
+                                       return_state=True)
         self.fc = tf.keras.layers.Dense(vocab_size)
 
         # used for attention
         self.attention = BahdanauAttention(self.dec_units)
 
     # Changed signature for compatibility with save function
-    def call(self, inp, training=False):
-        x, hidden, enc_output = inp
+    # def call(self, inp, training=False):
+    #    x, hidden, enc_output = inp
     #    return self.call(x, hidden, enc_output)
 
-    # def call(self, x, hidden, enc_output):
+    def call(self, x, hidden, enc_output):
         # enc_output shape == (batch_size, max_length, hidden_size)
-        context_vector, attention_weights = self.attention([hidden, enc_output])
+        context_vector, attention_weights = self.attention(hidden, enc_output)
 
         # x shape after passing through embedding == (batch_size, 1, embedding_dim)
         x = self.embedding(x)

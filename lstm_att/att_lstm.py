@@ -6,7 +6,7 @@ tf.get_logger().setLevel('ERROR')
 
 from sklearn.model_selection import train_test_split
 
-from argparse import ArgumentParser
+import argparse
 import numpy as np
 import time
 import random
@@ -17,9 +17,10 @@ import logging
 from att_module import Encoder, BahdanauAttention, Decoder
 from helper import *
 
-parser = ArgumentParser(description="Load character seq2seq model")
+parser = argparse.ArgumentParser(description="Load character seq2seq model", 
+                    formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument("--num-samples", dest="num_samples", required=False,
-                    help="number of epochs", default=10000,
+                    help="max number of samples for training", default=10000,
                     type=int)
 parser.add_argument("--epochs", dest="epochs", required=False,
                     help="number of epochs", default=100,
@@ -29,6 +30,9 @@ parser.add_argument("--latent-dim", dest="latent_dim", required=False,
                     type=int)
 parser.add_argument("--embed-dim", dest="embed_dim", required=False,
                     help="path to options.json file", default=100,
+                    type=int)
+parser.add_argument("--batch-size", dest="batch_size", required=False,
+                    help="path to dict.json file", default=10,
                     type=int)
 parser.add_argument("--clip-length", dest="clip_length", required=False,
                     help="path to dict.json file", default=None,
@@ -76,7 +80,7 @@ logger.debug('validating (input, target) tensor %d %d' % (
     len(input_tensor_val), len(target_tensor_val)))
 
 BUFFER_SIZE = len(input_tensor_train)
-BATCH_SIZE = 64
+BATCH_SIZE = args.batch_size
 steps_per_epoch = len(input_tensor_train)//BATCH_SIZE
 embedding_dim = args.embed_dim
 units = args.latent_dim
@@ -132,7 +136,7 @@ def train_step(inp, targ, enc_hidden, validation=False):
     loss = 0
 
     with tf.GradientTape() as tape:
-        enc_output, enc_hidden, _ = encoder([inp, enc_hidden])
+        enc_output, enc_hidden, _ = encoder(inp, enc_hidden)
 
         dec_hidden = enc_hidden
 
@@ -141,7 +145,7 @@ def train_step(inp, targ, enc_hidden, validation=False):
         # Teacher forcing - feeding the target as the next input
         for t in range(1, targ.shape[1]):
             # passing enc_output to the decoder
-            predictions, dec_hidden, _ = decoder([dec_input, dec_hidden, enc_output])
+            predictions, dec_hidden, _ = decoder(dec_input, dec_hidden, enc_output)
 
             loss += loss_function(targ[:, t], predictions)
 
@@ -176,6 +180,47 @@ options = {
 json.dump(options, open(os.path.join(OUT_DIR, 'options.json'), 'w'))
 print('Files and logs saved to %s' % OUT_DIR)
 
+def evaluate(sentence):
+    attention_plot = np.zeros((max_length_targ, max_length_inp))
+
+    sentence = preprocess_sentence(sentence, clip_length)
+
+    inputs = [lang.word_index[i] for i in sentence]
+    inputs = tf.keras.preprocessing.sequence.pad_sequences([inputs],
+                                                         maxlen=max_length_inp,
+                                                         padding='post')
+    inputs = tf.convert_to_tensor(inputs)
+
+    result = ''
+
+    hidden = [tf.zeros((1, units))]
+    enc_out, enc_hidden, enc_c = encoder(inputs, hidden)
+
+    dec_hidden = enc_hidden
+    dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
+
+    for t in range(max_length_targ):
+        predictions, dec_hidden, attention_weights = decoder(dec_input,
+                                                             dec_hidden,
+                                                             enc_out)
+
+        # storing the attention weights to plot later on
+        attention_weights = tf.reshape(attention_weights, (-1, ))
+        attention_plot[t] = attention_weights.numpy()
+
+        predicted_id = tf.argmax(predictions[0]).numpy()
+
+        result += lang.index_word[predicted_id]
+
+        if lang.index_word[predicted_id] == END_TOK:
+            return result, sentence, attention_plot
+
+        # the predicted ID is fed back into the model
+        dec_input = tf.expand_dims([predicted_id], 0)
+
+    return result, sentence, attention_plot
+
+
 loss, val_loss = [], []
 
 for epoch in range(EPOCHS):
@@ -207,9 +252,10 @@ for epoch in range(EPOCHS):
         val_total_loss += batch_loss
     
     val_loss.append(val_total_loss / steps_per_epoch)
-    print('Epoch {} Loss {:.4f} Validation {:.4f}\n'.format(epoch + 1, loss[-1], val_loss[-1]))
+    print('Epoch {} Loss {:.4f} Validation {:.4f}'.format(epoch + 1, loss[-1], val_loss[-1]))
     logger.info('Epoch {} Loss {:.4f} Validation {:.4f}'.format(epoch + 1,
                                       loss[-1], val_loss[-1]))
+    print('{}\t{}\t\t{}\t{}\n'.format('की', evaluate('की')[0], 'इसे', evaluate('इसे')[0]))
 
 with open(os.path.join(OUT_DIR, 'loss.csv'), 'w') as f:
     f.write('epoch\tloss\tval_loss\n')
@@ -220,45 +266,6 @@ checkpoint.save(file_prefix = os.path.join(OUT_DIR, 'ckpt'))
 encoder.save_weights(os.path.join(OUT_DIR, 'encoder'))
 decoder.save_weights(os.path.join(OUT_DIR, 'decoder'))
 
-def evaluate(sentence):
-    attention_plot = np.zeros((max_length_targ, max_length_inp))
-
-    sentence = preprocess_sentence(sentence, clip_length)
-
-    inputs = [lang.word_index[i] for i in sentence]
-    inputs = tf.keras.preprocessing.sequence.pad_sequences([inputs],
-                                                         maxlen=max_length_inp,
-                                                         padding='post')
-    inputs = tf.convert_to_tensor(inputs)
-
-    result = ''
-
-    hidden = [tf.zeros((1, units))]
-    enc_out, enc_hidden, enc_c = encoder([inputs, hidden])
-
-    dec_hidden = enc_hidden
-    dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
-
-    for t in range(max_length_targ):
-        predictions, dec_hidden, attention_weights = decoder([dec_input,
-                                                             dec_hidden,
-                                                             enc_out])
-
-        # storing the attention weights to plot later on
-        attention_weights = tf.reshape(attention_weights, (-1, ))
-        attention_plot[t] = attention_weights.numpy()
-
-        predicted_id = tf.argmax(predictions[0]).numpy()
-
-        result += lang.index_word[predicted_id]
-
-        if lang.index_word[predicted_id] == END_TOK:
-            return result, sentence, attention_plot
-
-        # the predicted ID is fed back into the model
-        dec_input = tf.expand_dims([predicted_id], 0)
-
-    return result, sentence, attention_plot
 
 def translate(sentence):
     result, sentence, attention_plot = evaluate(sentence)
@@ -269,3 +276,52 @@ def translate(sentence):
     attention_plot = attention_plot[:len(result.split(' ')), :len(sentence.split(' '))]
     # plot_attention(attention_plot, sentence.split(' '), result.split(' '))
 
+with open('../data/test.csv', 'r') as f, open(os.path.join(OUT_DIR, 'test.csv'), 'w') as o:
+    corr = 0
+    faul = 0
+    for i, line in enumerate(f):
+        if i >= min(2000, num_samples // 2):
+            break
+        line = line.strip()
+        _, word, lemma = line.split()
+        out, inp, _ = evaluate(word)
+        out, inp = out[:-1], inp[1:-1]
+        if clip_length is None:
+            if out == lemma:
+                corr += 1
+            else:
+                faul += 1
+        else:
+            if out == lemma[-clip_length:]:
+                corr += 1
+            else:
+                faul += 1
+        
+        o.write('{}\t{}\t{}\t{}\n'.format(word,lemma,out,inp))
+
+    o.write('{} {}'.format(corr, faul))
+
+with open('../data/train.csv', 'r') as f, open(os.path.join(OUT_DIR, 'train.csv'), 'w') as o:
+    corr = 0
+    faul = 0
+    for i, line in enumerate(f):
+        if i >= min(2000, num_samples // 2):
+            break
+        line = line.strip()
+        _, word, lemma = line.split()
+        out, inp, _ = evaluate(word)
+        out, inp = out[:-1], inp[1:-1]
+        if clip_length is None:
+            if out == lemma:
+                corr += 1
+            else:
+                faul += 1
+        else:
+            if out == lemma[-clip_length:]:
+                corr += 1
+            else:
+                faul += 1
+        
+        o.write('{}\t{}\t{}\t{}\n'.format(word,lemma,out,inp))
+
+    o.write('{} {}'.format(corr, faul))
