@@ -47,7 +47,7 @@ def tokenize(lang, lang_tokenizer=None):
 
     return tensor, lang_tokenizer
 
-def load_dataset(path, num_examples=None, clip_length=None):
+def load_dataset(path, num_examples=None, clip_length=None, tokenizer=None):
     # creating cleaned input, output pairs
     inp_lang, targ_lang = create_dataset(path, num_examples, clip_length)
 
@@ -61,6 +61,9 @@ def load_dataset(path, num_examples=None, clip_length=None):
     lang_tokenizer = tf.keras.preprocessing.text.Tokenizer(
             filters='', lower=False, char_level=True)
     lang_tokenizer.fit_on_texts(chars)
+
+    if tokenizer is not None:
+        lang_tokenizer = tokenizer
 
     # since we are working on the same language, the same char set
     # works for both input and target language
