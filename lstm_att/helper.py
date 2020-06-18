@@ -8,6 +8,12 @@ import re
 import io
 import pickle
 
+def preprocess_tags(t):
+    t = t.strip()
+    t = t.replace(';', ' ')
+    t = 'START' + ' ' + t + ' ' + 'END'
+    return t
+
 def preprocess_sentence(w, clip_length=None):
     w = w.strip()
     w = re.sub(r'[" "]+', " ", w)
@@ -29,9 +35,14 @@ def preprocess_sentence(w, clip_length=None):
 # 3. Return word pairs in the format: [Word, Lemma]
 def create_dataset(path, num_examples, clip_length):
     lines = io.open(path, encoding='UTF-8').read().strip().split('\n')
-    word_pairs = [[preprocess_sentence(w, clip_length) for w in l.split()[1:]]  
-        for l in lines[:num_examples]]
-
+    word_pairs = []
+    for l in lines[:num_examples]:
+        ws = l.split('\t')
+        word_pairs.append([
+            preprocess_tags(ws[0]), 
+            preprocess_sentence(ws[1]),
+            preprocess_sentence(ws[2])
+        ])
     return zip(*word_pairs)
 
 def tokenize(lang, lang_tokenizer=None):
@@ -47,30 +58,69 @@ def tokenize(lang, lang_tokenizer=None):
 
     return tensor, lang_tokenizer
 
-def load_dataset(path, num_examples=None, clip_length=None, tokenizer=None):
-    # creating cleaned input, output pairs
-    inp_lang, targ_lang = create_dataset(path, num_examples, clip_length)
+def tag_tokenize(tags, tag_tokenizer=None):
+    # If tokenizer is supplied, assume that it is already fit to the input lang
+    if tag_tokenizer is None:
+        tag_tokenizer = tf.keras.preprocessing.text.Tokenizer(
+            filters='', lower=False)
+        tag_tokenizer.fit_on_texts(tags)
 
-    # Load all devanagari characters in tokenizer
-    chars = []
-    chars.append(''.join([chr(x) for x in range(ord('\u0900'),ord('\u094f'))]))
-    chars.append(''.join([chr(x) for x in range(ord('\u0958'),ord('\u096f'))]))
-    chars.append('?.,-')  # Punctuation marks
-    chars.append('<>')  # Start and end tokens
+    tensor = tag_tokenizer.texts_to_sequences(tags)
+    tensor = tf.keras.preprocessing.sequence.pad_sequences(tensor,
+        padding='post')
 
-    lang_tokenizer = tf.keras.preprocessing.text.Tokenizer(
-            filters='', lower=False, char_level=True)
-    lang_tokenizer.fit_on_texts(chars)
+    return tensor, tag_tokenizer
 
-    if tokenizer is not None:
-        lang_tokenizer = tokenizer
+# Load dataset
+#    If inc_tags, both language and tag tokenizer will be returned. In case tokenizer is
+# supplied, both language and tag tokenizer should be given as a single tuple
+#    If not inc_tags, only language tokenizer will be returned. In case tokenizer is
+# supplied, only language tokenizer is required
+def load_dataset(path, num_examples=None, clip_length=None, tokenizer=None, inc_tags=False):
+    lang_tokenizer = None
 
-    # since we are working on the same language, the same char set
-    # works for both input and target language
-    input_tensor, _ = tokenize(inp_lang, lang_tokenizer)
-    target_tensor, _ = tokenize(targ_lang, lang_tokenizer)
+    if tokenizer is None:
+        # Load all devanagari characters in tokenizer
+        chars = []
+        chars.append(''.join([chr(x) for x in range(ord('\u0900'),ord('\u094f'))]))
+        chars.append(''.join([chr(x) for x in range(ord('\u0958'),ord('\u096f'))]))
+        chars.append('?.,-')  # Punctuation marks
+        chars.append('<>')  # Start and end tokens
 
-    return input_tensor, target_tensor, lang_tokenizer
+        lang_tokenizer = tf.keras.preprocessing.text.Tokenizer(
+                filters='', lower=False, char_level=True)
+        lang_tokenizer.fit_on_texts(chars)
+
+    if inc_tags:
+        tags, inp_lang, targ_lang = create_dataset(path, num_examples, clip_length)
+        if tokenizer is not None:
+            lang_tokenizer, tag_tokenizer = tokenizer
+        else:
+            tag_tokenizer = None
+
+        # since we are working on the same language, the same char set
+        # works for both input and target language
+        input_tensor, _ = tokenize(inp_lang, lang_tokenizer)
+        target_tensor, _ = tokenize(targ_lang, lang_tokenizer)
+
+        if tag_tokenizer is None:
+            tag_tensor, tag_tokenizer = tag_tokenize(tags)
+        else:
+            tag_tensor, _ = tag_tokenize(tags, tag_tokenizer)
+
+        return (input_tensor, target_tensor, tag_tensor), (lang_tokenizer, tag_tokenizer)
+    else:
+        # creating cleaned input, output pairs
+        _, inp_lang, targ_lang = create_dataset(path, num_examples, clip_length)    
+        if tokenizer is not None:
+            lang_tokenizer = tokenizer
+
+        # since we are working on the same language, the same char set
+        # works for both input and target language
+        input_tensor, _ = tokenize(inp_lang, lang_tokenizer)
+        target_tensor, _ = tokenize(targ_lang, lang_tokenizer)
+
+        return (input_tensor, target_tensor), lang_tokenizer
 
 def save_tokeniser(tokeniser, file_path):
     with open(file_path, 'wb') as handle:

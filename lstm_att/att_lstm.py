@@ -16,7 +16,7 @@ import string
 import json
 import logging
 
-from att_module import Encoder, BahdanauAttention, Decoder
+from att_module import Encoder, Decoder, TagEncoder
 from helper import *
 
 parser = argparse.ArgumentParser(description="Train character seq2seq model", 
@@ -45,6 +45,8 @@ parser.add_argument("--out-dir", dest="out_dir", required=False,
 parser.add_argument("--inp-dir", dest="inp_dir", required=False,
                     help="Input directory", default='../data',
                     type=str)
+parser.add_argument("--inc-tags", dest="inc_tags", required=False,
+                    help="Use tags", action='store_true')
 args = parser.parse_args()
 
 # Create new output directory
@@ -52,7 +54,7 @@ OUT_BASE_DIR = args.out_dir
 out_folder = ''.join(random.choices(string.ascii_lowercase +
                              string.digits, k = 8))
 OUT_DIR = os.path.join(OUT_BASE_DIR, out_folder)
-os.makedirs(OUT_DIR)
+os.makedirs(OUT_DIR, exist_ok=True)
 
 # Set up logger
 logger = logging.getLogger('training')
@@ -70,20 +72,39 @@ num_samples = args.num_samples
 clip_length = args.clip_length
 input_file = os.path.join(DATA_DIR, 'train.csv')
 dev_file = os.path.join(DATA_DIR, 'dev.csv')
+inc_tags = args.inc_tags
 
 if os.path.exists(dev_file):
-    input_tensor_train, target_tensor_train, lang = load_dataset(input_file, num_samples, clip_length)
-    input_tensor_val, target_tensor_val, _ = load_dataset(dev_file, num_samples, clip_length, tokenizer=lang)
-    max_length_targ, max_length_inp = max(target_tensor_val.shape[1], target_tensor_train.shape[1]), max(input_tensor_train.shape[1], input_tensor_val.shape[1])
+    tensor, tokenizer = load_dataset(
+        input_file, num_samples, clip_length, inc_tags=inc_tags)
+    tensor_val, _ = load_dataset(
+        dev_file, num_samples, clip_length, tokenizer=tokenizer, inc_tags=inc_tags)
+
+    input_tensor_train, target_tensor_train = tensor[0], tensor[1]
+    input_tensor_val, target_tensor_val = tensor_val[0], tensor_val[1]
+
+    if inc_tags:
+        tag_tensor_train = tensor[2]
+        tag_tensor_val = tensor_val[2]
 else:
-    input_tensor, target_tensor, lang = load_dataset(input_file, num_samples, clip_length)
+    tensor, tokenizer = load_dataset(
+        input_file, num_samples, clip_length, inc_tags=inc_tags)
 
-    # Calculate max_length of the target tensors
-    max_length_targ, max_length_inp = target_tensor.shape[1], input_tensor.shape[1]
+    if inc_tags:
+        # Creating training and validation sets using an 80-20 split
+        input_tensor_train, input_tensor_val, target_tensor_train, \
+            target_tensor_val, tag_tensor_train, tag_tensor_val = \
+            train_test_split(tensor[0], tensor[1], tensor[2], test_size=0.2)
 
-    # Creating training and validation sets using an 80-20 split
-    input_tensor_train, input_tensor_val, target_tensor_train, target_tensor_val = \
-        train_test_split(input_tensor, target_tensor, test_size=0.2)
+max_length_targ = max(target_tensor_val.shape[1], target_tensor_train.shape[1])
+max_length_inp =  max(input_tensor_train.shape[1], input_tensor_val.shape[1])
+
+# Language and tag tokenizers
+lang, tok = None, None
+if inc_tags:
+    lang, tag_tokenizer = tokenizer
+else:
+    lang = tokenizer
 
 # Show length
 print(len(input_tensor_train), len(target_tensor_train), 
@@ -100,21 +121,40 @@ embedding_dim = args.embed_dim
 units = args.latent_dim
 vocab_inp_size = len(lang.word_index)+1
 vocab_tar_size = len(lang.word_index)+1
+vocab_tag_size = len(tag_tokenizer.word_index)+1 if tag_tokenizer else 0
 
-logger.debug('Vocabulary size %d' % (len(lang.word_index)+1))
 logger.debug('Units %d' % units)
 logger.debug('Embedding dim %d' % embedding_dim)
 logger.debug('Batch size %d' % BATCH_SIZE)
+logger.debug('Vocabulary size %d' % (len(lang.word_index)+1))
+if inc_tags:
+    logger.debug('Tag size %d' % (len(tag_tokenizer.word_index)+1))
 
-save_tokeniser(lang, os.path.join(OUT_DIR, 'tokenizer'))
+# save_tokeniser(lang, os.path.join(OUT_DIR, 'tokenizer'))
+# if inc_tags:
+#     save_tokeniser(tag, os.path.join(OUT_DIR, 'tag_tokenizer'))
 
-dataset = tf.data.Dataset.from_tensor_slices((input_tensor_train, target_tensor_train)).shuffle(BUFFER_SIZE)
+if inc_tags:
+    dataset = tf.data.Dataset.from_tensor_slices(
+        (input_tensor_train, target_tensor_train, tag_tensor_train)).shuffle(BUFFER_SIZE)
+    val_dataset = tf.data.Dataset.from_tensor_slices(
+        (input_tensor_val, target_tensor_val, tag_tensor_val)).shuffle(BUFFER_SIZE)
+else:
+    dataset = tf.data.Dataset.from_tensor_slices(
+        (input_tensor_train, target_tensor_train)).shuffle(BUFFER_SIZE)
+    val_dataset = tf.data.Dataset.from_tensor_slices(
+        (input_tensor_val, target_tensor_val)).shuffle(BUFFER_SIZE)
+
 dataset = dataset.batch(BATCH_SIZE, drop_remainder=True)
-
-val_dataset = tf.data.Dataset.from_tensor_slices((input_tensor_val, target_tensor_val)).shuffle(BUFFER_SIZE)
 val_dataset = val_dataset.batch(BATCH_SIZE, drop_remainder=True)
 
 encoder = Encoder(vocab_inp_size, embedding_dim, units, BATCH_SIZE)
+tag_encoder = None
+
+if inc_tags:
+    tag_encoder = TagEncoder(num_layers=1, d_model=100, num_heads=100, 
+                         dff=100, input_vocab_size=vocab_tag_size,
+                         batch_sz=BATCH_SIZE)
 
 # sample input
 # example_input_batch, example_target_batch = next(iter(dataset))
@@ -125,7 +165,7 @@ encoder = Encoder(vocab_inp_size, embedding_dim, units, BATCH_SIZE)
 # print ('Encoder output shape: (batch size, sequence length, units) {}'.format(sample_output.shape))
 # print ('Encoder Hidden state shape: (batch size, units) {}'.format(sample_hidden.shape))
 
-decoder = Decoder(vocab_tar_size, embedding_dim, units, BATCH_SIZE)
+decoder = Decoder(vocab_tar_size, embedding_dim, units, BATCH_SIZE, inc_tags=inc_tags)
 
 # sample_decoder_output, _, _ = decoder(tf.random.uniform((BATCH_SIZE, 1)),
 #                                       sample_hidden, sample_output)
@@ -148,11 +188,14 @@ def loss_function(real, pred):
     return tf.reduce_mean(loss_)
 
 @tf.function
-def train_step(inp, targ, enc_hidden, validation=False):
+def train_step(inp, targ, enc_hidden, validation=False, tag_inp=None, inc_tags=False):
     loss = 0
 
     with tf.GradientTape() as tape:
         enc_output, enc_hidden, _ = encoder(inp, enc_hidden)
+        tag_output = None
+        if inc_tags:
+            tag_output = tag_encoder(tag_inp, training=True, mask=None)
 
         dec_hidden = enc_hidden
 
@@ -161,7 +204,8 @@ def train_step(inp, targ, enc_hidden, validation=False):
         # Teacher forcing - feeding the target as the next input
         for t in range(1, targ.shape[1]):
             # passing enc_output to the decoder
-            predictions, dec_hidden, _ = decoder(dec_input, dec_hidden, enc_output)
+            predictions, dec_hidden, _ = decoder(
+                dec_input, dec_hidden, enc_output, tag_vec=tag_output, inc_tags=inc_tags)
 
             loss += loss_function(targ[:, t], predictions)
 
@@ -179,7 +223,7 @@ def train_step(inp, targ, enc_hidden, validation=False):
 
     return batch_loss
 
-def evaluate(sentence, attention_output=False):
+def evaluate(sentence, tags, attention_output=False):
     if attention_output:
         attention_plot = np.zeros((max_length_targ, max_length_inp))
 
@@ -191,6 +235,13 @@ def evaluate(sentence, attention_output=False):
                                                          padding='post')
     inputs = tf.convert_to_tensor(inputs)
 
+    if inc_tags:
+        tag_input = preprocess_tags(tags)
+        tag_input = [tag_tokenizer.word_index[i] for i in tag_input.split()]
+        tag_input = tf.convert_to_tensor(tag_input)
+
+        tag_output = tag_encoder(tag_input, training=False, mask=None)
+
     result = ''
 
     hidden = [tf.zeros((1, units))]
@@ -200,7 +251,14 @@ def evaluate(sentence, attention_output=False):
     dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
 
     for t in range(max_length_targ):
-        predictions, dec_hidden, attention_weights = decoder(dec_input,
+        if inc_tags:
+            predictions, dec_hidden, attention_weights = decoder(dec_input,
+                                                             dec_hidden,
+                                                             enc_out,
+                                                             tag_vecs=tag_output,
+                                                             inc_tags=inc_tags)
+        else:
+            predictions, dec_hidden, attention_weights = decoder(dec_input,
                                                              dec_hidden,
                                                              enc_out)
 
@@ -257,14 +315,24 @@ for epoch in range(EPOCHS):
     enc_hidden = encoder.initialize_hidden_state()
     total_loss = 0
 
-    for (batch, (inp, targ)) in enumerate(dataset.take(steps_per_epoch)):
-        batch_loss = train_step(inp, targ, enc_hidden)
-        total_loss += batch_loss
+    if inc_tags:
+        for (batch, (inp, targ, tag)) in enumerate(dataset.take(steps_per_epoch)):
+            batch_loss = train_step(inp, targ, enc_hidden, tag_inp=tag, inc_tags=inc_tags)
+            total_loss += batch_loss
 
-        if batch % 100 == 0:
-            logger.info('Epoch {} Batch {} Loss {:.4f}'.format(epoch + 1,
-                                                   batch,
-                                                   batch_loss.numpy()))
+            if batch % 100 == 0:
+                logger.info('Epoch {} Batch {} Loss {:.4f}'.format(epoch + 1,
+                                                       batch,
+                                                       batch_loss.numpy()))
+    else:
+        for (batch, (inp, targ)) in enumerate(dataset.take(steps_per_epoch)):
+            batch_loss = train_step(inp, targ, enc_hidden)
+            total_loss += batch_loss
+
+            if batch % 100 == 0:
+                logger.info('Epoch {} Batch {} Loss {:.4f}'.format(epoch + 1,
+                                                       batch,
+                                                       batch_loss.numpy()))
     
     # Update checkpoint step variable and save
     checkpoint.step.assign_add(1)
@@ -278,9 +346,16 @@ for epoch in range(EPOCHS):
     enc_hidden = encoder.initialize_hidden_state()
     val_total_loss = 0
 
-    for (batch, (inp, targ)) in enumerate(dataset.take(steps_per_epoch)):
-        batch_loss = train_step(inp, targ, enc_hidden, validation=True)
-        val_total_loss += batch_loss
+    if inc_tags:
+        for (batch, (inp, targ, tag)) in enumerate(dataset.take(steps_per_epoch)):
+            batch_loss = train_step(
+                inp, targ, enc_hidden, validation=True, tag_inp=tag, inc_tags=inc_tags)
+            val_total_loss += batch_loss
+    else:
+        for (batch, (inp, targ)) in enumerate(dataset.take(steps_per_epoch)):
+            batch_loss = train_step(
+                inp, targ, enc_hidden, validation=True)
+            val_total_loss += batch_loss
     
     val_loss.append(val_total_loss / steps_per_epoch)
     print('Epoch {} Loss {:.4f} Validation {:.4f}'.format(epoch + 1, loss[-1], val_loss[-1]))
@@ -316,8 +391,8 @@ with open(os.path.join(DATA_DIR, 'test.csv'), 'r') as f, open(os.path.join(OUT_D
         if i >= min(2000, num_samples // 2):
             break
         line = line.strip()
-        _, word, lemma = line.split('\t')
-        out, inp = evaluate(word)
+        tag, word, lemma = line.split('\t')
+        out, inp = evaluate(word, tag)
         out, inp = out[:-1], inp[1:-1]
         if clip_length is None:
             if out == lemma:
@@ -341,8 +416,8 @@ with open(os.path.join(DATA_DIR, 'train.csv'), 'r') as f, open(os.path.join(OUT_
         if i >= min(2000, num_samples // 2):
             break
         line = line.strip()
-        _, word, lemma = line.split('\t')
-        out, inp = evaluate(word)
+        tag, word, lemma = line.split('\t')
+        out, inp = evaluate(word, tag)
         out, inp = out[:-1], inp[1:-1]
         if clip_length is None:
             if out == lemma:
