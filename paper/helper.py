@@ -11,7 +11,6 @@ import pickle
 def preprocess_tags(t):
     t = t.strip()
     t = t.replace(';', ' ')
-    t = 'START' + ' ' + t + ' ' + 'END'
     return t
 
 def preprocess_sentence(w, clip_length=None):
@@ -64,7 +63,7 @@ def tag_tokenize(tags, tag_tokenizer=None):
         tag_tokenizer = tf.keras.preprocessing.text.Tokenizer(
             filters='', lower=False)
         # Add a new 'COPY' tag as well
-        tag_tokenizer.fit_on_texts(tags + [['COPY']])
+        tag_tokenizer.fit_on_texts(tags + ('COPY',))
 
     tensor = tag_tokenizer.texts_to_sequences(tags)
     tensor = tf.keras.preprocessing.sequence.pad_sequences(tensor,
@@ -132,6 +131,21 @@ def load_tokeniser(file_path):
     with open(file_path, 'rb') as handle:
         tokeniser = pickle.load(handle)
     return tokeniser
+
+def pad(x, y, concatenate=True):
+    # Pad x and y (2D tensors) so that they are the same sequence length
+    # and concatenate them along axis=0
+    maxlen = max(x.shape[1], y.shape[1])
+    x = tf.keras.preprocessing.sequence.pad_sequences(x, 
+                                                      maxlen=maxlen, 
+                                                      padding='post')
+    y = tf.keras.preprocessing.sequence.pad_sequences(y, 
+                                                      maxlen=maxlen, 
+                                                      padding='post')
+    if concatenate:
+        return np.concatenate([x, y], axis=0)
+    else:
+        return x, y
 
 def convert(lang, tensor):
     for t in tensor:

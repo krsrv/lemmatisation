@@ -133,7 +133,7 @@ class LuongAttention(tf.keras.layers.Layer):
         query_with_time_axis = tf.expand_dims(query, 1)
 
         # score shape == (batch_size, 1, max_len)
-        score = tf.self.W(query, W(values), transpose_b=True)
+        score = tf.matmul(query, self.W(values), transpose_b=True)
 
         # attention_weights shape == (batch_size, 1, max_len)
         attention_weights = tf.nn.softmax(score, axis=2)
@@ -215,9 +215,9 @@ class TagEncoder(tf.keras.layers.Layer):
         return x  # (batch_size, input_seq_len, d_model)
 
 class Decoder(tf.keras.Model):
-    def __init__(self, vocab_size, embedding_dim, dec_units, inc_tags=False):
+    def __init__(self, vocab_size, embedding_dim, units, inc_tags=False):
         super(Decoder, self).__init__()
-        self.dec_units = dec_units
+        self.dec_units = units
         self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
         self.lstm = tf.keras.layers.LSTM(self.dec_units,
                                        return_sequences=True,
@@ -225,24 +225,27 @@ class Decoder(tf.keras.Model):
         self.fc = tf.keras.layers.Dense(vocab_size)
 
         # used for attention
-        self.tag_attention = LuongAttention(dec_units)
-        self.enc_attention = LuongAttention(dec_units)
+        self.tag_attention = LuongAttention(self.dec_units)
+        if inc_tags:
+            self.enc_attention = LuongAttention(self.dec_units + embedding_dim)
+        else:
+            self.enc_attention = LuongAttention(self.dec_units)
 
-    def call(self, x, hidden, enc_output, tag_vec=None, inc_tags=False, training=True):
+    def call(self, x, hidden, enc_output, tag_vecs=None, inc_tags=False, training=True):
         # enc_output shape == (batch_size, max_length, hidden_size)
         if inc_tags:
             # Attend over tag vectors
-            tag_context_vector, tag_attention_weights = self.tag_attention(hidden, tag_vec)
+            tag_context_vector, tag_attention_weights = self.tag_attention(hidden, tag_vecs)
             query_encoder = tf.concat([tag_context_vector, hidden], axis=-1)
             enc_context_vector, attention_weights = self.enc_attention(query_encoder, enc_output)
         else:
-            enc_context_vector, attention_weights = self.enc_attention(hidden_with_time_axis, enc_output)
+            enc_context_vector, attention_weights = self.enc_attention(hidden, enc_output)
 
         # x shape after passing through embedding == (batch_size, 1, embedding_dim)
         x = self.embedding(x)
 
         # x shape after concatenation == (batch_size, 1, embedding_dim + hidden_size)
-        x = tf.concat([enc_context_vector, x], axis=-1)
+        # x = tf.concat([tf.expand_dims(enc_context_vector, 1), x], axis=-1)
         
         # passing the concatenated vector to the GRU
         output, state_h, state_c = self.lstm(x)
@@ -250,6 +253,9 @@ class Decoder(tf.keras.Model):
         # output shape == (batch_size * 1, hidden_size)
         output = tf.reshape(output, (-1, output.shape[2]))
 
+        # output shape == (batch_size, hidden_size+embedding_dim)
+        output= tf.concat([output, enc_context_vector], axis=-1)
+        
         # output shape == (batch_size, vocab)
         x = self.fc(output)
 

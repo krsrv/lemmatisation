@@ -31,7 +31,7 @@ parser.add_argument("--latent-dim", dest="latent_dim", required=False,
                     help="size of LSTM unit", default=100,
                     type=int)
 parser.add_argument("--embed-dim", dest="embed_dim", required=False,
-                    help="size of embedding vector", default=100,
+                    help="size of embedding vector", default=32,
                     type=int)
 parser.add_argument("--batch-size", dest="batch_size", required=False,
                     help="Batch size", default=10,
@@ -47,9 +47,6 @@ parser.add_argument("--inp-dir", dest="inp_dir", required=False,
                     type=str)
 parser.add_argument("--inc-tags", dest="inc_tags", required=False,
                     help="Use tags", action='store_true')
-parser.add_argument("--use-att", dest="use_att", required=False,
-                    help="Use attention for character encoder",
-                    action='store_true')
 args = parser.parse_args()
 
 # Create new output directory
@@ -88,9 +85,9 @@ if os.path.exists(dev_file):
     input_tensor_train, target_tensor_train, tag_tensor_train = tensor
     input_tensor_val, target_tensor_val, tag_tensor_val = tensor_val
 
-    input_tensor = input_tensor_train + input_tensor_val
-    target_tensor = target_tensor_train + target_tensor_val
-    tag_tensor = tag_tensor_train + target_tensor_val
+    # input_tensor = pad(input_tensor_train, input_tensor_val)
+    # target_tensor = pad(target_tensor_train, target_tensor_val)
+    # tag_tensor = pad(tag_tensor_train, tag_tensor_val)
 else:
     tensor, tokenizer = load_dataset(
         input_file, num_samples, clip_length, inc_tags=inc_tags)
@@ -116,14 +113,15 @@ logger.debug('training (input, target) tensor %d %d' % (
 logger.debug('validating (input, target) tensor %d %d' % (
     len(input_tensor_val), len(target_tensor_val)))
 
-BUFFER_SIZE = len(input_tensor)
+BUFFER_SIZE = len(input_tensor_train)
 BATCH_SIZE = args.batch_size
-steps_per_epoch = len(input_tensor_train)//BATCH_SIZE
+steps_per_epoch_train = len(input_tensor_train)//BATCH_SIZE
+steps_per_epoch_val = len(input_tensor_val)//BATCH_SIZE
 embedding_dim = args.embed_dim
 units = args.latent_dim
-vocab_inp_size = len(lang.word_index)+1
-vocab_tar_size = len(lang.word_index)+1
-vocab_tag_size = len(tag_tokenizer.word_index)+1
+vocab_inp_size = len(lang.word_index)+2
+vocab_tar_size = len(lang.word_index)+2
+vocab_tag_size = len(tag_tokenizer.word_index)+2
 
 logger.debug('Units %d' % units)
 logger.debug('Embedding dim %d' % embedding_dim)
@@ -135,24 +133,33 @@ if inc_tags:
 ## Save tokenizers
 save_tokeniser(lang, os.path.join(OUT_DIR, 'tokenizer'))
 if inc_tags:
-    save_tokeniser(tag, os.path.join(OUT_DIR, 'tag_tokenizer'))
+    save_tokeniser(tag_tokenizer, os.path.join(OUT_DIR, 'tag_tokenizer'))
 
 # Create datasets
 if inc_tags:
     # Create dataset for the warm-up phase
-    copy_tag_tensor = [['COPY'] for _ in range(len(input_tensor))]
+    copy_tag_tensor = [['COPY']]
     copy_tag_tensor = tag_tokenizer.texts_to_sequences(copy_tag_tensor)
+    copy_tag_tensor = tf.keras.preprocessing.sequence.pad_sequences(
+                                    copy_tag_tensor,
+                                    maxlen=max_length_tag,
+                                    padding='post')
+    copy_tag_tensor_train = np.repeat(copy_tag_tensor, input_tensor_train.shape[0], axis=0)
+    copy_tag_tensor_val = np.repeat(copy_tag_tensor, input_tensor_val.shape[0], axis=0)
 
-    X = input_tensor + target_tensor
-    T = copy_tag_tensor + tag_tensor
-    Y = input_tensor + target_tensor
+    # The tensors need to be padded to have the same sequence length
+    X_train = pad(input_tensor_train, target_tensor_train, concatenate=True)
+    Y_train = X_train[:, :]
+    T_train = pad(copy_tag_tensor_train, tag_tensor_train)
+    
+    X_val = pad(input_tensor_val, target_tensor_val, concatenate=True)
+    Y_val = X_val[:, :]
+    T_val = pad(copy_tag_tensor_val, tag_tensor_val)
 
-    X_train, X_test, T_train, T_test, Y_train, Y_test = \
-        train_test_split(X, T, Y, test_split=0.2)
     copy_dataset = tf.data.Dataset.from_tensor_slices(
-        (X_train, T_train, Y_train)).shuffle(BUFFER_SIZE)
+        (X_train, Y_train, T_train)).shuffle(2*BUFFER_SIZE)
     copy_val_dataset = tf.data.Dataset.from_tensor_slices(
-        (X_test, T_test, Y_test)).shuffle(BUFFER_SIZE)
+        (X_val, Y_val, T_val)).shuffle(2*BUFFER_SIZE)
     
     copy_dataset = copy_dataset.batch(BATCH_SIZE, drop_remainder=True)
     copy_val_dataset = copy_val_dataset.batch(BATCH_SIZE, drop_remainder=True)
@@ -175,12 +182,12 @@ encoder = Encoder(vocab_inp_size, embedding_dim, units)
 tag_encoder = None
 
 if inc_tags:
-    tag_encoder = TagEncoder(num_layers=1, d_model=100, num_heads=100, 
+    tag_encoder = TagEncoder(num_layers=1, d_model=embedding_dim, num_heads=1, 
                          dff=100, input_vocab_size=vocab_tag_size)
 
 decoder = Decoder(vocab_tar_size, embedding_dim, units, inc_tags=inc_tags)
 
-optimizer = tf.keras.optimizers.Adam()
+optimizer = tf.keras.optimizers.Adam(learning_rate=0.1)
 loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
     from_logits=True, reduction='none')
 
@@ -208,128 +215,7 @@ options = {
 json.dump(options, open(os.path.join(OUT_DIR, 'options.json'), 'w'))
 print('Files and logs saved to %s' % OUT_DIR)
 
-def loss_function(real, pred):
-    mask = tf.math.logical_not(tf.math.equal(real, 0))
-    loss_ = loss_object(real, pred)
-
-    mask = tf.cast(mask, dtype=loss_.dtype)
-    loss_ *= mask
-
-    return tf.reduce_mean(loss_)
-
-@tf.function
-def warm_up(inp, targ, enc_hidden, training=True, tag_inp=None, inc_tags=False):
-    loss = 0
-    outputs = tf.expand_dims([1] * BATCH_SIZE, 1)
-
-    with tf.GradientTape() as tape:
-        enc_output, enc_hidden, _ = encoder(inp, enc_hidden)
-        tag_output = None
-        if inc_tags:
-            tag_output = tag_encoder(tag_inp, training=True, mask=None)
-
-        dec_hidden = enc_hidden
-
-        dec_input = tf.expand_dims([lang.word_index[START_TOK]] * BATCH_SIZE, 1)
-
-        # Teacher forcing - feeding the target as the next input
-        for t in range(1, targ.shape[1]):
-            # passing enc_output to the decoder
-            predictions, dec_hidden, _ = decoder(
-                dec_input, dec_hidden, enc_output, tag_vec=tag_output, inc_tags=inc_tags)
-
-            loss += loss_function(targ[:, t], predictions)
-
-            # using scheduled sampling
-            if random.random() > 0.5 and training:
-                dec_input = tf.expand_dims(targ[:, t], 1)
-            else:
-                dec_input = tf.argmax(predictions, axis=-1)
-                if not training:
-                    mask = tf.math.logical_not(tf.math.equal(targ[:, t], 0))
-                    accuracy = (targ[;, t] == dec_input)
-                    accuracy = tf.math.logical_or(accuracy, mask)
-
-                    outputs = tf.add(outputs, tf.cast(accuracy, dtype='int32'))
-                dec_input = tf.expand_dims(dec_input, 1)
-
-    accuracy = tf.reduce_sum(tf.cast(outputs == targ.shape[1]), dtype='int32')
-    batch_loss = (loss / int(targ.shape[1]))
-
-    if training:
-        variables = encoder.trainable_variables + decoder.trainable_variables
-
-        gradients = tape.gradient(loss, variables)
-
-        optimizer.apply_gradients(zip(gradients, variables))
-
-    return batch_loss, accuracy
-
-# Warm-up until 75% accuracy:
-while inc_tags:
-    enc_hidden = encoder.initialize_hidden_state(BATCH_SIZE)
-    
-    for (batch, (inp, targ, tag)) in enumerate(copy_dataset.take(steps_per_epoch)):
-        batch_loss, _ = train_step(inp, targ, enc_hidden, tag_inp=tag, inc_tags=inc_tags)
-        total_loss += batch_loss
-
-        # if batch % 100 == 0:
-            # logger.info('Epoch {} Batch {} Loss {:.4f}'.format(epoch + 1,
-                                                   # batch,
-                                                   # batch_loss.numpy()))   
-    # Update checkpoint step variable and save
-    checkpoint.step.assign_add(1)
-    if int(checkpoint.step) % 10 == 0:
-        manager.save()
-
-    # Calculate validation accuracy
-    accuracy = None
-    enc_hidden = encoder.initialize_hidden_state()
-
-    for (batch, (inp, targ, tag)) in enumerate(copy_val_dataset.take(steps_per_epoch)):
-        _, acc = train_step(
-            inp, targ, enc_hidden, training=False, tag_inp=tag, inc_tags=inc_tags)
-        accuracy += acc
-
-    print('Accuracy {}'.format(accuracy.numpy()))
-assert 1 == 2
-@tf.function
-def fine_tune(inp, targ, enc_hidden, validation=False, tag_inp=None, inc_tags=False):
-    loss = 0
-
-    with tf.GradientTape() as tape:
-        enc_output, enc_hidden, _ = encoder(inp, enc_hidden)
-        tag_output = None
-        if inc_tags:
-            tag_output = tag_encoder(tag_inp, training=True, mask=None)
-
-        dec_hidden = enc_hidden
-
-        dec_input = tf.expand_dims([lang.word_index[START_TOK]] * BATCH_SIZE, 1)
-
-        # Teacher forcing - feeding the target as the next input
-        for t in range(1, targ.shape[1]):
-            # passing enc_output to the decoder
-            predictions, dec_hidden, _ = decoder(
-                dec_input, dec_hidden, enc_output, tag_vec=tag_output, inc_tags=inc_tags)
-
-            loss += loss_function(targ[:, t], predictions)
-
-            # using teacher forcing
-            dec_input = tf.expand_dims(targ[:, t], 1)
-
-    batch_loss = (loss / int(targ.shape[1]))
-
-    if not validation:
-        variables = encoder.trainable_variables + decoder.trainable_variables
-
-        gradients = tape.gradient(loss, variables)
-
-        optimizer.apply_gradients(zip(gradients, variables))
-
-    return batch_loss
-
-def evaluate(sentence, tags, attention_output=False):
+def evaluate(sentence, tags, attention_output=False, inc_tags=False):
     if attention_output:
         attention_plot = np.zeros((max_length_targ, max_length_inp))
 
@@ -344,7 +230,7 @@ def evaluate(sentence, tags, attention_output=False):
     if inc_tags:
         tag_input = preprocess_tags(tags)
         tag_input = [tag_tokenizer.word_index[i] for i in tag_input.split()]
-        tag_input = tf.convert_to_tensor(tag_input)
+        tag_input = tf.convert_to_tensor([tag_input])
 
         tag_output = tag_encoder(tag_input, training=False, mask=None)
 
@@ -390,6 +276,152 @@ def evaluate(sentence, tags, attention_output=False):
         return result, sentence, attention_plot
     else:
         return result, sentence
+
+def loss_function(real, pred):
+    mask = tf.math.logical_not(tf.math.equal(real, 0))
+    loss_ = loss_object(real, pred)
+
+    mask = tf.cast(mask, dtype=loss_.dtype)
+    loss_ *= mask
+
+    return tf.reduce_mean(loss_)
+
+@tf.function
+def warm_up(inp, targ, enc_hidden, training=True, tag_inp=None, inc_tags=False):
+    loss = 0
+    outputs = [1 for _ in range(BATCH_SIZE)]
+
+    with tf.GradientTape() as tape:
+        enc_output, enc_hidden, _ = encoder(inp, enc_hidden)
+        tag_output = None
+        if inc_tags:
+            tag_output = tag_encoder(tag_inp, training=True, mask=None)
+        dec_hidden = enc_hidden
+
+        dec_input = tf.expand_dims([lang.word_index[START_TOK]] * BATCH_SIZE, 1)
+
+        # Teacher forcing - feeding the target as the next input
+        for t in range(1, targ.shape[1]):
+            # passing enc_output to the decoder
+            predictions, dec_hidden, _ = decoder(dec_input, dec_hidden, enc_output, 
+                                                tag_vecs=tag_output, 
+                                                inc_tags=inc_tags)
+
+            loss += loss_function(targ[:, t], predictions)
+
+            if training:
+                # using teacher forcing
+                dec_input = tf.expand_dims(targ[:, t], 1)
+            else:
+                # calculating accuracy when running validation
+                dec_input = tf.argmax(predictions, axis=-1, output_type=tf.int32)
+                mask = tf.math.logical_not(tf.math.equal(targ[:, t], 0))
+                accuracy = (targ[:, t] == dec_input)
+                accuracy = tf.math.logical_or(accuracy, mask)
+
+                outputs = tf.add(outputs, tf.cast(accuracy, dtype='int32'))
+                dec_input = tf.expand_dims(dec_input, 1)
+            
+    accuracy = tf.reduce_sum(tf.cast(outputs == targ.shape[1], dtype='int32'))
+    batch_loss = (loss / int(targ.shape[1]))
+
+    if training:
+        variables = encoder.trainable_variables + decoder.trainable_variables
+
+        gradients = tape.gradient(loss, variables)
+
+        optimizer.apply_gradients(zip(gradients, variables))
+
+    return batch_loss, accuracy
+
+# Warm-up until 75% accuracy:
+while inc_tags:
+    start = time.time()
+    total_loss = 0
+    enc_hidden = encoder.initialize_hidden_state(BATCH_SIZE)
+    
+    for (batch, (inp, targ, tag)) in enumerate(copy_dataset.take(steps_per_epoch_train)):
+        batch_loss, _ = warm_up(inp, targ, enc_hidden, 
+                                tag_inp=tag, 
+                                inc_tags=inc_tags)
+        total_loss += batch_loss
+
+        if batch % 100 == 0:
+            logger.info('Warm-up Epoch {} Batch {} Loss {:.4f}'.format(
+                                                    int(checkpoint.step),
+                                                    batch,
+                                                    batch_loss.numpy()))
+    # Update checkpoint step variable and save
+    checkpoint.step.assign_add(1)
+    if int(checkpoint.step) % 10 == 0:
+        manager.save()
+    
+    # Calculate validation accuracy
+    accuracy = 0
+    enc_hidden = encoder.initialize_hidden_state(BATCH_SIZE)
+
+    for (batch, (inp, targ, tag)) in enumerate(copy_val_dataset.take(steps_per_epoch_val)):
+        _, acc = warm_up(inp, targ, enc_hidden,
+                        training=False, 
+                        tag_inp=tag, 
+                        inc_tags=inc_tags)
+        accuracy += acc
+    logger.info('Warm-up Validation accuracy {}/{}'.format(
+                                                accuracy.numpy(),
+                                                steps_per_epoch_val*BATCH_SIZE))
+    
+    print('Time taken for 1 epoch {} sec'.format(time.time() - start))
+    print('Epoch {} Loss {:.4f} Accuracy {}'.format(
+            int(checkpoint.step), 
+            total_loss/steps_per_epoch_train, 
+            accuracy))
+
+assert 1 == 2
+@tf.function
+def fine_tune(inp, targ, enc_hidden, validation=False, tag_inp=None, inc_tags=False):
+    loss = 0
+
+    with tf.GradientTape() as tape:
+        enc_output, enc_hidden, _ = encoder(inp, enc_hidden)
+        tag_output = None
+        if inc_tags:
+            tag_output = tag_encoder(tag_inp, training=True, mask=None)
+
+        dec_hidden = enc_hidden
+
+        dec_input = tf.expand_dims([lang.word_index[START_TOK]] * BATCH_SIZE, 1)
+
+        # Teacher forcing - feeding the target as the next input
+        for t in range(1, targ.shape[1]):
+            # passing enc_output to the decoder
+            predictions, dec_hidden, _ = decoder(
+                dec_input, dec_hidden, enc_output, tag_vecs=tag_output, inc_tags=inc_tags)
+
+            loss += loss_function(targ[:, t], predictions)
+
+            # using scheduled sampling
+            if random.random() > 0.5 and training:
+                dec_input = tf.expand_dims(targ[:, t], 1)
+            else:
+                dec_input = tf.argmax(predictions, axis=-1, output_type=tf.int32)
+                if not training:
+                    mask = tf.math.logical_not(tf.math.equal(targ[:, t], 0))
+                    accuracy = (targ[:, t] == dec_input)
+                    accuracy = tf.math.logical_or(accuracy, mask)
+
+                    outputs = tf.add(outputs, tf.cast(accuracy, dtype='int32'))
+                dec_input = tf.expand_dims(dec_input, 1)
+
+    batch_loss = (loss / int(targ.shape[1]))
+
+    if not validation:
+        variables = encoder.trainable_variables + decoder.trainable_variables
+
+        gradients = tape.gradient(loss, variables)
+
+        optimizer.apply_gradients(zip(gradients, variables))
+
+    return batch_loss
 
 loss, val_loss = [], []
 
@@ -468,7 +500,8 @@ def translate(sentence):
     attention_plot = attention_plot[:len(result.split(' ')), :len(sentence.split(' '))]
     # plot_attention(attention_plot, sentence.split(' '), result.split(' '))
 
-with open(os.path.join(DATA_DIR, 'test.csv'), 'r') as f, open(os.path.join(OUT_DIR, 'test.csv'), 'w') as o:
+with open(os.path.join(DATA_DIR, 'test.csv'), 'r') as f, \
+     open(os.path.join(OUT_DIR, 'test.csv'), 'w') as o:
     corr = 0
     faul = 0
     for i, line in enumerate(f):
@@ -493,7 +526,8 @@ with open(os.path.join(DATA_DIR, 'test.csv'), 'r') as f, open(os.path.join(OUT_D
 
     o.write('{} {}'.format(corr, faul))
 
-with open(os.path.join(DATA_DIR, 'train.csv'), 'r') as f, open(os.path.join(OUT_DIR, 'train.csv'), 'w') as o:
+with open(os.path.join(DATA_DIR, 'train.csv'), 'r') as f, \
+     open(os.path.join(OUT_DIR, 'train.csv'), 'w') as o:
     corr = 0
     faul = 0
     for i, line in enumerate(f):
