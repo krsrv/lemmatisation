@@ -63,7 +63,8 @@ def tag_tokenize(tags, tag_tokenizer=None):
     if tag_tokenizer is None:
         tag_tokenizer = tf.keras.preprocessing.text.Tokenizer(
             filters='', lower=False)
-        tag_tokenizer.fit_on_texts(tags)
+        # Add a new 'COPY' tag as well
+        tag_tokenizer.fit_on_texts(tags + [['COPY']])
 
     tensor = tag_tokenizer.texts_to_sequences(tags)
     tensor = tf.keras.preprocessing.sequence.pad_sequences(tensor,

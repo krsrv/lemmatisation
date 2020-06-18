@@ -47,11 +47,15 @@ parser.add_argument("--inp-dir", dest="inp_dir", required=False,
                     type=str)
 parser.add_argument("--inc-tags", dest="inc_tags", required=False,
                     help="Use tags", action='store_true')
+parser.add_argument("--use-att", dest="use_att", required=False,
+                    help="Use attention for character encoder",
+                    action='store_true')
 args = parser.parse_args()
 
 # Create new output directory
-OUT_BASE_DIR = args.out_dir
-out_folder = ''.join(random.choices(string.ascii_lowercase +
+OUT_BASE_DIR = out_folder = args.out_dir
+while os.path.exists(os.path.join(OUT_BASE_DIR, out_folder)):
+    out_folder = ''.join(random.choices(string.ascii_lowercase +
                              string.digits, k = 8))
 OUT_DIR = os.path.join(OUT_BASE_DIR, out_folder)
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -74,39 +78,37 @@ input_file = os.path.join(DATA_DIR, 'train.csv')
 dev_file = os.path.join(DATA_DIR, 'dev.csv')
 inc_tags = args.inc_tags
 
+# Load data from files to variables
 if os.path.exists(dev_file):
     tensor, tokenizer = load_dataset(
         input_file, num_samples, clip_length, inc_tags=inc_tags)
     tensor_val, _ = load_dataset(
         dev_file, num_samples, clip_length, tokenizer=tokenizer, inc_tags=inc_tags)
 
-    input_tensor_train, target_tensor_train = tensor[0], tensor[1]
-    input_tensor_val, target_tensor_val = tensor_val[0], tensor_val[1]
+    input_tensor_train, target_tensor_train, tag_tensor_train = tensor
+    input_tensor_val, target_tensor_val, tag_tensor_val = tensor_val
 
-    if inc_tags:
-        tag_tensor_train = tensor[2]
-        tag_tensor_val = tensor_val[2]
+    input_tensor = input_tensor_train + input_tensor_val
+    target_tensor = target_tensor_train + target_tensor_val
+    tag_tensor = tag_tensor_train + target_tensor_val
 else:
     tensor, tokenizer = load_dataset(
         input_file, num_samples, clip_length, inc_tags=inc_tags)
 
-    if inc_tags:
-        # Creating training and validation sets using an 80-20 split
-        input_tensor_train, input_tensor_val, target_tensor_train, \
-            target_tensor_val, tag_tensor_train, tag_tensor_val = \
-            train_test_split(tensor[0], tensor[1], tensor[2], test_size=0.2)
-
+    input_tensor, target_tensor, tag_tensor = tensor[0], tensor[1], tensor[2]
+    # Creating training and validation sets using an 80-20 split
+    input_tensor_train, input_tensor_val, target_tensor_train, \
+        target_tensor_val, tag_tensor_train, tag_tensor_val = \
+        train_test_split(input_tensor, tensor_train, tag_tensor, test_size=0.2)
+    
 max_length_targ = max(target_tensor_val.shape[1], target_tensor_train.shape[1])
 max_length_inp =  max(input_tensor_train.shape[1], input_tensor_val.shape[1])
+max_length_tag = max(tag_tensor_train.shape[1], tag_tensor_val.shape[1])
 
-# Language and tag tokenizers
-lang, tok = None, None
-if inc_tags:
-    lang, tag_tokenizer = tokenizer
-else:
-    lang = tokenizer
+## Language and tag tokenizers
+lang, tag_tokenizer = tokenizer
 
-# Show length
+## Show length
 print(len(input_tensor_train), len(target_tensor_train), 
     len(input_tensor_val), len(target_tensor_val))
 logger.debug('training (input, target) tensor %d %d' % (
@@ -121,7 +123,7 @@ embedding_dim = args.embed_dim
 units = args.latent_dim
 vocab_inp_size = len(lang.word_index)+1
 vocab_tar_size = len(lang.word_index)+1
-vocab_tag_size = len(tag_tokenizer.word_index)+1 if tag_tokenizer else 0
+vocab_tag_size = len(tag_tokenizer.word_index)+1
 
 logger.debug('Units %d' % units)
 logger.debug('Embedding dim %d' % embedding_dim)
@@ -130,10 +132,12 @@ logger.debug('Vocabulary size %d' % (len(lang.word_index)+1))
 if inc_tags:
     logger.debug('Tag size %d' % (len(tag_tokenizer.word_index)+1))
 
-# save_tokeniser(lang, os.path.join(OUT_DIR, 'tokenizer'))
-# if inc_tags:
-#     save_tokeniser(tag, os.path.join(OUT_DIR, 'tag_tokenizer'))
+## Save tokenizers
+save_tokeniser(lang, os.path.join(OUT_DIR, 'tokenizer'))
+if inc_tags:
+    save_tokeniser(tag, os.path.join(OUT_DIR, 'tag_tokenizer'))
 
+# Create datasets
 if inc_tags:
     dataset = tf.data.Dataset.from_tensor_slices(
         (input_tensor_train, target_tensor_train, tag_tensor_train)).shuffle(BUFFER_SIZE)
@@ -156,21 +160,7 @@ if inc_tags:
                          dff=100, input_vocab_size=vocab_tag_size,
                          batch_sz=BATCH_SIZE)
 
-# sample input
-# example_input_batch, example_target_batch = next(iter(dataset))
-# example_input_batch.shape, example_target_batch.shape
-# 
-# sample_hidden = encoder.initialize_hidden_state()
-# sample_output, sample_hidden, _ = encoder(example_input_batch, [sample_hidden, sample_hidden])
-# print ('Encoder output shape: (batch size, sequence length, units) {}'.format(sample_output.shape))
-# print ('Encoder Hidden state shape: (batch size, units) {}'.format(sample_hidden.shape))
-
 decoder = Decoder(vocab_tar_size, embedding_dim, units, BATCH_SIZE, inc_tags=inc_tags)
-
-# sample_decoder_output, _, _ = decoder(tf.random.uniform((BATCH_SIZE, 1)),
-#                                       sample_hidden, sample_output)
-# 
-# print ('Decoder output shape: (batch_size, vocab size) {}'.format(sample_decoder_output.shape))
 
 optimizer = tf.keras.optimizers.Adam()
 loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
