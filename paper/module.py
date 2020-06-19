@@ -1,6 +1,74 @@
 import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
 
+class BahdanauAttention(tf.keras.layers.Layer):
+    def __init__(self, units):
+        super(BahdanauAttention, self).__init__()
+        self.W1 = tf.keras.layers.Dense(units)
+        self.W2 = tf.keras.layers.Dense(units)
+        self.V = tf.keras.layers.Dense(1)
+
+    def call(self, query, values):
+        # query hidden state shape == (batch_size, hidden size)
+        # query_with_time_axis shape == (batch_size, 1, hidden size)
+        # values shape == (batch_size, max_len, hidden size)
+        # we are doing this to broadcast addition along the time axis to calculate the score
+        query_with_time_axis = tf.expand_dims(query, 1)
+
+        # score shape == (batch_size, max_length, 1)
+        # we get 1 at the last axis because we are applying score to self.V
+        # the shape of the tensor before applying self.V is (batch_size, max_length, units)
+        score = self.V(tf.nn.tanh(
+            self.W1(query_with_time_axis) + self.W2(values)))
+
+        # attention_weights shape == (batch_size, max_length, 1)
+        attention_weights = tf.nn.softmax(score, axis=1)
+
+        # context_vector shape after sum == (batch_size, hidden_size)
+        context_vector = attention_weights * values
+        context_vector = tf.reduce_sum(context_vector, axis=1)
+
+        return context_vector, attention_weights
+
+class LuongAttention(tf.keras.layers.Layer):
+    def __init__(self, units):
+        super(LuongAttention, self).__init__()
+        # self.W = tf.keras.layers.Dense(units)
+        self.W = tf.keras.layers.Dense(units)
+
+    def call(self, query, values, mask=None):
+        # query hidden state shape == (batch_size, hidden size)
+        # query_with_time_axis shape == (batch_size, 1, hidden size)
+        # values shape == (batch_size, max_len, hidden size)
+        # mask shape == (batch_size, max_len)
+        # we are doing this to broadcast addition along the time axis to calculate the score
+        query_with_time_axis = tf.expand_dims(query, 1)
+
+        # score shape == (batch_size, 1, max_len)
+        score = tf.matmul(query_with_time_axis, self.W(values), transpose_b=True)
+        if mask is not None:
+            score = score + (mask * -1e-9)
+
+        # attention_weights shape == (batch_size, 1, max_len)
+        attention_weights = tf.nn.softmax(score, axis=2)
+
+        # context_vector shape after sum == (batch_size, value_size)
+        context_vector = tf.matmul(attention_weights, values)
+        context_vector = tf.reduce_sum(context_vector, axis=1)
+
+        return context_vector, attention_weights
+
+def create_padding_mask(seq, mode='luong'):
+    seq = tf.cast(tf.math.equal(seq, 0), tf.float32)
+    # add extra dimensions to add the padding
+    # to the attention logits.
+    if mode == 'transformer':
+        return seq[:, tf.newaxis, tf.newaxis, :]  # (batch_size, 1, 1, seq_len)
+    elif mode == 'luong':
+        return seq[:, tf.newaxis, :]
+    elif mode == 'lstm':
+        return tf.cast(seq, tf.bool)
+
 def scaled_dot_product_attention(q, k, v, mask):
     """Calculate the attention weights.
     q, k, v must have matching leading dimensions.
@@ -91,59 +159,6 @@ def point_wise_feed_forward_network(d_model, dff):
         tf.keras.layers.Dense(d_model)  # (batch_size, seq_len, d_model)
     ])
 
-class BahdanauAttention(tf.keras.layers.Layer):
-    def __init__(self, units):
-        super(BahdanauAttention, self).__init__()
-        self.W1 = tf.keras.layers.Dense(units)
-        self.W2 = tf.keras.layers.Dense(units)
-        self.V = tf.keras.layers.Dense(1)
-
-    def call(self, query, values):
-        # query hidden state shape == (batch_size, hidden size)
-        # query_with_time_axis shape == (batch_size, 1, hidden size)
-        # values shape == (batch_size, max_len, hidden size)
-        # we are doing this to broadcast addition along the time axis to calculate the score
-        query_with_time_axis = tf.expand_dims(query, 1)
-
-        # score shape == (batch_size, max_length, 1)
-        # we get 1 at the last axis because we are applying score to self.V
-        # the shape of the tensor before applying self.V is (batch_size, max_length, units)
-        score = self.V(tf.nn.tanh(
-            self.W1(query_with_time_axis) + self.W2(values)))
-
-        # attention_weights shape == (batch_size, max_length, 1)
-        attention_weights = tf.nn.softmax(score, axis=1)
-
-        # context_vector shape after sum == (batch_size, hidden_size)
-        context_vector = attention_weights * values
-        context_vector = tf.reduce_sum(context_vector, axis=1)
-
-        return context_vector, attention_weights
-
-class LuongAttention(tf.keras.layers.Layer):
-    def __init__(self, units):
-        super(LuongAttention, self).__init__()
-        self.W = tf.keras.layers.Dense(units)
-
-    def call(self, query, values):
-        # query hidden state shape == (batch_size, hidden size)
-        # query_with_time_axis shape == (batch_size, 1, hidden size)
-        # values shape == (batch_size, max_len, value size)
-        # we are doing this to broadcast addition along the time axis to calculate the score
-        query_with_time_axis = tf.expand_dims(query, 1)
-
-        # score shape == (batch_size, 1, max_len)
-        score = tf.matmul(query, self.W(values), transpose_b=True)
-
-        # attention_weights shape == (batch_size, 1, max_len)
-        attention_weights = tf.nn.softmax(score, axis=2)
-
-        # context_vector shape after sum == (batch_size, value_size)
-        context_vector = tf.matmul(attention_weights, values)
-        context_vector = tf.reduce_sum(context_vector, axis=1)
-
-        return context_vector, attention_weights
-
 class Encoder(tf.keras.Model):
     def __init__(self, vocab_size, embedding_dim, enc_units):
         super(Encoder, self).__init__()
@@ -153,13 +168,13 @@ class Encoder(tf.keras.Model):
                                        return_sequences=True,
                                        return_state=True)
 
-    def call(self, x, hidden):
+    def call(self, x, state=None, mask=None):
         x = self.embedding(x)
-        output, state_h, state_c = self.lstm(x)
+        output, state_h, state_c = self.lstm(x, initial_state=state, mask=mask)
         return output, state_h, state_c
 
-    def initialize_hidden_state(self, batch_sz):
-        return tf.zeros((batch_sz, self.enc_units))
+    def initial_state(self, batch_sz):
+        return (tf.zeros((batch_sz, self.enc_units)), tf.zeros((batch_sz, self.enc_units)))
 
 class TransformerEncoderLayer(tf.keras.layers.Layer):
     def __init__(self, d_model, num_heads, dff, rate=0.1):
@@ -224,42 +239,43 @@ class Decoder(tf.keras.Model):
                                        return_state=True)
         self.fc = tf.keras.layers.Dense(vocab_size)
 
-        # used for attention
-        self.tag_attention = LuongAttention(self.dec_units)
         if inc_tags:
+            # used for attention
+            self.tag_attention = LuongAttention(self.dec_units)
             self.enc_attention = LuongAttention(self.dec_units + embedding_dim)
         else:
             self.enc_attention = LuongAttention(self.dec_units)
 
-    def call(self, x, hidden, enc_output, tag_vecs=None, inc_tags=False, training=True):
-        # enc_output shape == (batch_size, max_length, hidden_size)
-        if inc_tags:
-            # Attend over tag vectors
-            tag_context_vector, tag_attention_weights = self.tag_attention(hidden, tag_vecs)
-            query_encoder = tf.concat([tag_context_vector, hidden], axis=-1)
-            enc_context_vector, attention_weights = self.enc_attention(query_encoder, enc_output)
-        else:
-            enc_context_vector, attention_weights = self.enc_attention(hidden, enc_output)
+        self.W_c = tf.keras.layers.Dense(units, use_bias=False)
 
+    def call(self, x, state, enc_output, tag_vecs=None, inc_tags=False,
+             enc_mask=None, tag_mask=None, training=True):
+        # enc_output shape == (batch_size, max_length, hidden_size)
         # x shape after passing through embedding == (batch_size, 1, embedding_dim)
         x = self.embedding(x)
 
-        # x shape after concatenation == (batch_size, 1, embedding_dim + hidden_size)
-        # x = tf.concat([tf.expand_dims(enc_context_vector, 1), x], axis=-1)
-        
-        # passing the concatenated vector to the GRU
-        output, state_h, state_c = self.lstm(x)
+        # passing the concatenated vector to the LSTM
+        output, state_h, state_c = self.lstm(x, initial_state=state)
 
         # output shape == (batch_size * 1, hidden_size)
         output = tf.reshape(output, (-1, output.shape[2]))
 
+        if inc_tags:
+            # Attend over tag vectors
+            tag_context_vector, tag_attention_weights = self.tag_attention(output, tag_vecs, tag_mask)
+            query_encoder = tf.concat([output, tag_context_vector], axis=-1)
+            enc_context_vector, attention_weights = self.enc_attention(query_encoder, enc_output, enc_mask)
+        else:
+            enc_context_vector, attention_weights = self.enc_attention(state_h, enc_output, enc_mask)
+
         # output shape == (batch_size, hidden_size+embedding_dim)
-        output= tf.concat([output, enc_context_vector], axis=-1)
+        output = tf.concat([output, enc_context_vector], axis=-1)
+        output = tf.math.tanh(self.W_c(output))
         
-        # output shape == (batch_size, vocab)
+        # # output shape == (batch_size, vocab)
         x = self.fc(output)
 
         if inc_tags:
-            return x, state_h, (attention_weights, tag_attention_weights)
+            return x, (state_h, state_c), (attention_weights, tag_attention_weights)
         else:
-            return x, state_h, attention_weights
+            return x, (state_h, state_c), attention_weights

@@ -1,8 +1,10 @@
 import tensorflow as tf
 import numpy as np
 
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
+import matplotlib.font_manager as mfm
 
 import re
 import io
@@ -76,8 +78,8 @@ def tag_tokenize(tags, tag_tokenizer=None):
 # supplied, both language and tag tokenizer should be given as a single tuple
 #    If not inc_tags, only language tokenizer will be returned. In case tokenizer is
 # supplied, only language tokenizer is required
-def load_dataset(path, num_examples=None, clip_length=None, tokenizer=None, inc_tags=False):
-    lang_tokenizer = None
+def load_dataset(path, num_examples=None, clip_length=None, tokenizer=None):
+    lang_tokenizer, tag_tokenizer = None, None
 
     if tokenizer is None:
         # Load all devanagari characters in tokenizer
@@ -91,36 +93,21 @@ def load_dataset(path, num_examples=None, clip_length=None, tokenizer=None, inc_
                 filters='', lower=False, char_level=True)
         lang_tokenizer.fit_on_texts(chars)
 
-    if inc_tags:
-        tags, inp_lang, targ_lang = create_dataset(path, num_examples, clip_length)
-        if tokenizer is not None:
-            lang_tokenizer, tag_tokenizer = tokenizer
-        else:
-            tag_tokenizer = None
+    tags, inp_lang, targ_lang = create_dataset(path, num_examples, clip_length)
+    if tokenizer is not None:
+        lang_tokenizer, tag_tokenizer = tokenizer
+    
+    # since we are working on the same language, the same char set
+    # works for both input and target language
+    input_tensor, _ = tokenize(inp_lang, lang_tokenizer)
+    target_tensor, _ = tokenize(targ_lang, lang_tokenizer)
 
-        # since we are working on the same language, the same char set
-        # works for both input and target language
-        input_tensor, _ = tokenize(inp_lang, lang_tokenizer)
-        target_tensor, _ = tokenize(targ_lang, lang_tokenizer)
-
-        if tag_tokenizer is None:
-            tag_tensor, tag_tokenizer = tag_tokenize(tags)
-        else:
-            tag_tensor, _ = tag_tokenize(tags, tag_tokenizer)
-
-        return (input_tensor, target_tensor, tag_tensor), (lang_tokenizer, tag_tokenizer)
+    if tag_tokenizer is None:
+        tag_tensor, tag_tokenizer = tag_tokenize(tags)
     else:
-        # creating cleaned input, output pairs
-        _, inp_lang, targ_lang = create_dataset(path, num_examples, clip_length)    
-        if tokenizer is not None:
-            lang_tokenizer = tokenizer
+        tag_tensor, _ = tag_tokenize(tags, tag_tokenizer)
 
-        # since we are working on the same language, the same char set
-        # works for both input and target language
-        input_tensor, _ = tokenize(inp_lang, lang_tokenizer)
-        target_tensor, _ = tokenize(targ_lang, lang_tokenizer)
-
-        return (input_tensor, target_tensor), lang_tokenizer
+    return (input_tensor, target_tensor, tag_tensor), (lang_tokenizer, tag_tokenizer)
 
 def save_tokeniser(tokeniser, file_path):
     with open(file_path, 'wb') as handle:
@@ -153,20 +140,23 @@ def convert(lang, tensor):
             print ("%d ----> %s" % (t, lang.index_word[t]))
 
 # function for plotting the attention weights
-def plot_attention(attention, sentence, predicted_sentence):
+def plot_attention(attention, sentence, predicted_sentence, fname=None):
     fig = plt.figure(figsize=(10,10))
     ax = fig.add_subplot(1, 1, 1)
     ax.matshow(attention, cmap='viridis')
-
-    fontdict = {'fontsize': 14}
-
-    ax.set_xticklabels([''] + sentence, fontdict=fontdict, rotation=90)
-    ax.set_yticklabels([''] + predicted_sentence, fontdict=fontdict)
-
+    prop = mfm.FontProperties(fname='Nirmala.ttf')
+    # fontdict = {'fontsize': 16}
+    ax.tick_params(labelsize=16)
+    ax.xaxis.set_label_text('Input')
+    ax.yaxis.set_label_text('Output')
+    ax.set_xticklabels('S'+sentence, fontproperties=prop, rotation=90)
+    ax.set_yticklabels('S'+predicted_sentence, fontproperties=prop)
     ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
     ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
-
-    plt.show()
+    if fname:
+        plt.savefig(fname, bbox_inches='tight')
+    else:
+        plt.show()
 
 def get_number_training_vars(module):
     return np.sum([np.prod(v.get_shape().as_list()) for v in module.trainable_variables])

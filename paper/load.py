@@ -30,9 +30,6 @@ args = parser.parse_args()
 # Start and End tokens - check in helper.py too
 START_TOK, END_TOK = '<', '>'
 
-# Load tokenizer
-lang = pickle.load(open(os.path.join(args.dir, 'tokenizer'), 'rb'))
-
 # Load options
 options = json.load(open(os.path.join(args.dir, 'options.json'), 'r'))
 
@@ -43,6 +40,8 @@ max_length_inp = options['max_length_inp'] \
     if 'max_length_inp' in options.keys() else 15
 clip_length = options['clip_length'] \
     if 'clip_length' in options.keys() else None
+inc_tags = options['inc_tags'] \
+    if 'inc_tags' in options.keys else False
 
 EPOCHS = options['epochs'] \
     if 'epochs' in options.keys() else 100
@@ -52,6 +51,13 @@ embedding_dim = options['embedding']
 units = options['units']
 vocab_inp_size = len(lang.word_index)+1
 vocab_tar_size = len(lang.word_index)+1
+if inc_tags:
+    vocab_tag_size = len(tag_tokenizer.word_index)+1
+
+# Load tokenizer
+lang = pickle.load(open(os.path.join(args.dir, 'tokenizer'), 'rb'))
+if inc_tags:
+    tag_tokenizer = pickle.load(open(os.path.join(args.dir, 'tokenizer'), 'rb'))
 
 def _create_dataset(path, return_tf_dataset=False):
     lines = io.open(path, encoding='UTF-8').read().strip().split('\n')
@@ -127,6 +133,14 @@ optimizer = tf.keras.optimizers.Adam()
 loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
     from_logits=True, reduction='none')
 
+if inc_tags:
+    params = options['tag_encoder']
+    tag_encoder = TagEncoder(num_layers = params['num_layers'], 
+                             d_model = params['units'], 
+                             num_heads = params['num_heads'], 
+                             dff = params['dff'],
+                             input_vocab_size = vocab_tag_size)
+
 def loss_function(real, pred):
     mask = tf.math.logical_not(tf.math.equal(real, 0))
     loss_ = loss_object(real, pred)
@@ -137,10 +151,17 @@ def loss_function(real, pred):
     return tf.reduce_mean(loss_)
 
 # Set up checkpoints
-checkpoint = tf.train.Checkpoint(step=tf.Variable(1),
-                                 optimizer=optimizer,
-                                 encoder=encoder,
-                                 decoder=decoder)
+ckpt_dict = {
+    'step': tf.Variable(1),
+    'optimizer': optimizer,
+    'encoder': encoder,
+    'decoder': decoder
+}
+if inc_tags:
+    ckpt_dict['tag_encoder'] = tag_encoder
+
+checkpoint = tf.train.Checkpoint(**ckpt_dict)
+
 # manager = tf.train.CheckpointManager(checkpoint, os.path.join(args.dir, 'tf_ckpts'), max_to_keep=3)
 latest_ckpt = tf.train.latest_checkpoint(os.path.join(args.dir, 'tf_ckpts'))
 
