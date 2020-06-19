@@ -207,7 +207,7 @@ EPOCHS = args.epochs
 
 # Set up checkpoints
 ckpt_dict = {
-    'step': tf.Variable(1),
+    'step': tf.Variable(0),
     'optimizer': optimizer,
     'encoder': encoder,
     'decoder': decoder
@@ -216,8 +216,16 @@ if inc_tags:
     ckpt_dict['tag_encoder'] = tag_encoder
 
 checkpoint = tf.train.Checkpoint(**ckpt_dict)
-manager = tf.train.CheckpointManager(checkpoint,
-     os.path.join(OUT_DIR, 'tf_ckpts'), max_to_keep=3)
+copy_manager = tf.train.CheckpointManager(checkpoint,
+     os.path.join(OUT_DIR, 'copy_ckpt'), max_to_keep=1)
+main_manager = {
+    'accuracy': tf.train.CheckpointManager(checkpoint,
+        os.path.join(OUT_DIR, 'acc_ckpt'), max_to_keep=1),
+    'validation': tf.train.CheckpointManager(checkpoint,
+        os.path.join(OUT_DIR, 'val_ckpt'), max_to_keep=1),
+    'latest': tf.train.CheckpointManager(checkpoint,
+        os.path.join(OUT_DIR, 'latest_ckpt'), max_to_keep=1)
+    }
 
 # Save all settings
 options = {
@@ -261,11 +269,10 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
         tag_input = tf.keras.preprocessing.sequence.pad_sequences(tag_input,
                                                          maxlen=max_length_tag,
                                                          padding='post')
-        tag_input = tf.convert_to_tensor([tag_input])
+        tag_input = tf.convert_to_tensor(tag_input)
 
-        tag_mask = create_padding_mask(tag_input, transformer=True)
+        tag_mask = create_padding_mask(tag_input, 'transformer')
         tag_output = tag_encoder(tag_input, training=False, mask=tag_mask)
-        tag_mask = create_padding_mask(tag_input)
     else:
         tag_output, tag_mask = None, None
 
@@ -282,9 +289,7 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
                                                              dec_states,
                                                              enc_out,
                                                              tag_vecs=tag_output,
-                                                             inc_tags=inc_tags,
-                                                             tag_mask=tag_mask,
-                                                             enc_mask=enc_mask)
+                                                             inc_tags=inc_tags)
         
         if attention_output:
             # storing the attention weights to plot later on
@@ -340,7 +345,7 @@ def train_step(inp, targ, mode='main', enc_state=None, training=True,
             tag_output = tag_encoder(tag_inp, training=True, mask=tag_mask)
             
             # Different mask needed for non-transformer architecture
-            tag_mask = create_padding_mask(tag_inp, 'luong')
+            tag_mask = None
         
         dec_states = (enc_hidden, enc_c)
         dec_input = tf.expand_dims([lang.word_index[START_TOK]] * BATCH_SIZE, 1)
@@ -397,7 +402,8 @@ def train_step(inp, targ, mode='main', enc_state=None, training=True,
         return batch_loss, count
 
 # Warm-up until 75% accuracy:
-while False:
+logger.info('Warm-up phase')
+while True:
     start = time.time()
     total_loss = 0
     
@@ -412,41 +418,51 @@ while False:
                                                     int(checkpoint.step),
                                                     batch,
                                                     batch_loss.numpy()))
+    total_loss /= (len(X_train) // BATCH_SIZE)
     # Update checkpoint step variable and save
     checkpoint.step.assign_add(1)
-    if int(checkpoint.step) % 10 == 0:
-        manager.save()
+    epoch = int(checkpoint.step)
+    if int(epoch) % 10 == 0:
+        copy_manager.save()
     
     # Calculate validation accuracy
-    accuracy = 0
-    enc_hidden = encoder.initial_state(BATCH_SIZE)
+    val_total_loss = 0
+    total_accuracy = 0
 
     for (batch, (inp, targ, tag)) in enumerate(copy_val_dataset):
-        _, acc, outputs = train_step(inp, targ,
-                                  training=False, 
-                                  tag_inp=tag, 
-                                  inc_tags=inc_tags, 
-                                  return_outputs=True)
-        # print(outputs)
-        inputs = lang.sequences_to_texts(inp.numpy())
-        inputs = [x[1:-1].replace(' ','') for x in inputs]
-
-        outputs = lang.sequences_to_texts(outputs.numpy())
-        outputs = [x[:x.find('>')].replace(' ', '') for x in outputs]
-        print(inputs, '\n', outputs)
-        accuracy += acc
-    logger.info('Warm-up Validation accuracy {}/{}'.format(
-                                                accuracy.numpy(),
-                                                steps_per_epoch_val*BATCH_SIZE))
+        batch_loss, batch_accuracy = train_step(inp, targ,
+                                                mode='validation',
+                                                training=False, 
+                                                tag_inp=tag, 
+                                                inc_tags=inc_tags)
+        val_total_loss += batch_loss
+        total_accuracy += batch_accuracy
+    
+    val_total_loss /= (len(X_val) // BATCH_SIZE)
+    total_accuracy /= (len(X_val))
     
     print('Time taken for 1 epoch {} sec'.format(time.time() - start))
-    print('Epoch {} Loss {:.4f} Accuracy {}'.format(
-            int(checkpoint.step), 
-            total_loss/steps_per_epoch_train, 
-            accuracy.numpy()))
+    print('Copy: Epoch {} Loss {:.4f} Validation {:.4f} Validation accuracy {}'.format(
+            epoch, total_loss, val_total_loss, total_accuracy))
+    logger.info('Copy: Epoch {} Loss {:.4f} Validation {:.4f} Val Accuracy {}'.format(
+            epoch, total_loss, val_total_loss, total_accuracy))
+
+    if total_accuracy >= 0.75:
+        print('Successful. Copying phase over')
+        logger.info('Warm-up phase finished with accuracy {}'.format(total_accuracy))
+        copy_manager.save()
+        break
+
+    if epoch > 20:
+        print('Epochs exceeded. Copying phase over')
+        logger.info('Warm-up phase breaking with accuracy {}'.format(total_accuracy))
+        copy_manager.save()
+        break
 
 # Start main phase training
+logger.info('Main phase')
 loss, val_loss, accuracy = [], [], []
+patience = 5
 
 for epoch in range(EPOCHS):
     start = time.time()
@@ -465,12 +481,11 @@ for epoch in range(EPOCHS):
     
     # Update checkpoint step variable and save
     checkpoint.step.assign_add(1)
-    if epoch % 10 == 0 and epoch > 0:
+    if epoch % 10 == 0:
         text = lang.sequences_to_texts([input_tensor_train[0]])[0]
         text = text.replace(' ', '')
         output(text[1:-1], os.path.join(OUT_DIR, './' + str(epoch) + '.png'))
-        manager.save()
-
+    
     loss.append(total_loss / steps_per_epoch_train)
     print('Time taken for 1 epoch {} sec'.format(time.time() - start))
     
@@ -479,28 +494,43 @@ for epoch in range(EPOCHS):
     total_accuracy = 0
 
     for (batch, (inp, targ, tag)) in enumerate(val_dataset.take(steps_per_epoch_val)):
-        batch_loss, batch_accuracy, batch_outputs = train_step(inp, targ, mode='validation',
+        batch_loss, batch_accuracy = train_step(inp, targ, mode='validation',
                                                 training=False, 
                                                 tag_inp=tag, 
-                                                inc_tags=inc_tags,
-                                                return_outputs=True)
+                                                inc_tags=inc_tags)
         val_total_loss += batch_loss
         total_accuracy += batch_accuracy
     
     val_loss.append(val_total_loss / steps_per_epoch_val)
+    accuracy.append(total_accuracy / len(input_tensor_val))
+
     print('Epoch {} Loss {:.4f} Validation {:.4f} Validation accuracy {}'.format(
-           epoch + 1, loss[-1], val_loss[-1], total_accuracy))
-    logger.info('Epoch {} Loss {:.4f} Validation {:.4f}'.format(epoch + 1,
-                                      loss[-1], val_loss[-1]))
+            epoch + 1, loss[-1], val_loss[-1], total_accuracy))
+    logger.info('Epoch {} Loss {:.4f} Validation {:.4f} Val Accuracy {}'.format(
+            epoch + 1, loss[-1], val_loss[-1], total_accuracy))
 
-    X, T, O = inp, targ, batch_outputs
+    if len(accuracy) > 1 and accuracy[-1] > accuracy[-2]:
+        main_manager['accuracy'].save()
 
+    if len(val_loss) > 1 and val_loss[-1] < val_loss[-2]:
+        main_manager['validation'].save()
+    else:
+        logger.debug('Patience now at {}'.format(patience))
+        patience -= 1
+
+    if accuracy[-1] > 0.90 or patience <= 0:
+        print('Main phase breaking')
+        logger.info('Main phase finished with accuracy {}'.format(accuracy[-1]))
+        main_manager['latest'].save()
+        break
+
+# Dump loss values to file
 with open(os.path.join(OUT_DIR, 'loss.csv'), 'w') as f:
-    f.write('epoch\tloss\tval_loss\n')
-    for i, (lo, vo) in enumerate(zip(loss, val_loss)):
-        f.write('{}\t{}\t{}\n'.format(i+1, lo, vo))
+    f.write('epoch\tloss\tval_loss\taccuracy\n')
+    for i, (lo, vo, ac) in enumerate(zip(loss, val_loss, accuracy)):
+        f.write('{}\t{}\t{}\t{}\n'.format(i+1, lo, vo, ac))
 
-manager.save()
+main_manager['latest'].save()
 
 # Dump weights as well
 os.makedirs(os.path.join(OUT_DIR, 'encoder'), exist_ok=True)
@@ -510,6 +540,12 @@ decoder.save_weights(os.path.join(OUT_DIR, 'decoder', 'dec-wt'))
 if inc_tags:
     os.makedirs(os.path.join(OUT_DIR, 'tag_encoder'), exist_ok=True)
     tag_encoder.save_weights(os.path.join(OUT_DIR, 'tag_encoder', 'tag-enc-wt'))
+
+if main_manager['validation'].latest_checkpoint:
+    ckpt = main_manager['validation'].latest_checkpoint
+    checkpoint.restore(ckpt)
+    print('Restored best validation model')
+    logger.debug('Restored best validation model from {}'.format(ckpt))
 
 def translate(sentence):
     result, sentence, attention_plot = evaluate(sentence)
@@ -525,11 +561,11 @@ with open(os.path.join(DATA_DIR, 'test.csv'), 'r') as f, \
     corr = 0
     faul = 0
     for i, line in enumerate(f):
-        if i >= min(2000, num_samples // 2):
+        if i >= min(2000, num_samples):
             break
         line = line.strip()
         tag, word, lemma = line.split('\t')
-        out, inp = evaluate(word, tag)
+        out, inp = evaluate(word, tag, inc_tags=inc_tags)
         out, inp = out[:-1], inp[1:-1]
         if clip_length is None:
             if out == lemma:
@@ -542,7 +578,6 @@ with open(os.path.join(DATA_DIR, 'test.csv'), 'r') as f, \
             else:
                 faul += 1    
         o.write('{}\t{}\t{}\t{}\n'.format(word,lemma,out,inp))
-
     o.write('{} {}'.format(corr, faul))
 
 with open(os.path.join(DATA_DIR, 'train.csv'), 'r') as f, \
@@ -550,11 +585,11 @@ with open(os.path.join(DATA_DIR, 'train.csv'), 'r') as f, \
     corr = 0
     faul = 0
     for i, line in enumerate(f):
-        if i >= min(2000, num_samples // 2):
+        if i >= min(100, num_samples):
             break
         line = line.strip()
         tag, word, lemma = line.split('\t')
-        out, inp = evaluate(word, tag)
+        out, inp = evaluate(word, tag, inc_tags=inc_tags)
         out, inp = out[:-1], inp[1:-1]
         if clip_length is None:
             if out == lemma:
@@ -565,8 +600,6 @@ with open(os.path.join(DATA_DIR, 'train.csv'), 'r') as f, \
             if out == lemma[-clip_length:]:
                 corr += 1
             else:
-                faul += 1
-        
+                faul += 1    
         o.write('{}\t{}\t{}\t{}\n'.format(word,lemma,out,inp))
-
     o.write('{} {}'.format(corr, faul))

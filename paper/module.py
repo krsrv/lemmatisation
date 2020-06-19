@@ -200,6 +200,24 @@ class TransformerEncoderLayer(tf.keras.layers.Layer):
 
         return out2
 
+class SingleHeadTransformerEncoderLayer(tf.keras.layers.Layer):
+    def __init__(self, d_model, rate=0.1):
+        super(SingleHeadTransformerEncoderLayer, self).__init__()
+        self.mha = MultiHeadAttention(d_model, 1)
+
+        self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        self.layernorm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+
+        self.dropout1 = tf.keras.layers.Dropout(rate)
+        self.dropout2 = tf.keras.layers.Dropout(rate)
+
+    def call(self, x, training, mask):
+        attn_output, _ = self.mha(x, x, x, mask)  # (batch_size, input_seq_len, d_model)
+        attn_output = self.dropout1(attn_output, training=training)
+        out1 = self.layernorm1(x + attn_output)  # (batch_size, input_seq_len, d_model)
+
+        return out1
+
 class TagEncoder(tf.keras.layers.Layer):
     def __init__(self, num_layers, d_model, num_heads, dff, input_vocab_size,
            rate=0.1):
@@ -210,7 +228,10 @@ class TagEncoder(tf.keras.layers.Layer):
 
         self.embedding = tf.keras.layers.Embedding(input_vocab_size, d_model)
 
-        self.enc_layers = [TransformerEncoderLayer(d_model, num_heads, dff, rate) 
+        if num_layers == 1 and num_heads == 1:
+            self.enc_layers = [SingleHeadTransformerEncoderLayer(d_model)]
+        else:
+            self.enc_layers = [TransformerEncoderLayer(d_model, num_heads, dff, rate) 
                        for _ in range(num_layers)]
 
         self.dropout = tf.keras.layers.Dropout(rate)
@@ -242,7 +263,7 @@ class Decoder(tf.keras.Model):
         if inc_tags:
             # used for attention
             self.tag_attention = LuongAttention(self.dec_units)
-            self.enc_attention = LuongAttention(self.dec_units + embedding_dim)
+            self.enc_attention = LuongAttention(self.dec_units)
         else:
             self.enc_attention = LuongAttention(self.dec_units)
 
@@ -254,28 +275,40 @@ class Decoder(tf.keras.Model):
         # x shape after passing through embedding == (batch_size, 1, embedding_dim)
         x = self.embedding(x)
 
-        # passing the concatenated vector to the LSTM
-        output, state_h, state_c = self.lstm(x, initial_state=state)
-
-        # output shape == (batch_size * 1, hidden_size)
-        output = tf.reshape(output, (-1, output.shape[2]))
-
         if inc_tags:
+            s_prev, _ = state
             # Attend over tag vectors
-            tag_context_vector, tag_attention_weights = self.tag_attention(output, tag_vecs, tag_mask)
-            query_encoder = tf.concat([output, tag_context_vector], axis=-1)
-            enc_context_vector, attention_weights = self.enc_attention(query_encoder, enc_output, enc_mask)
-        else:
-            enc_context_vector, attention_weights = self.enc_attention(state_h, enc_output, enc_mask)
+            tag_context_vector, tag_attention_weights = self.tag_attention(s_prev, tag_vecs, tag_mask)
+            
+            s_k = tf.concat([s_prev, tag_context_vector], axis=-1)
+            s_k = tf.math.tanh(self.W_c(s_k))
+            
+            # Attend over encoder vectors
+            enc_context_vector, attention_weights = self.enc_attention(s_k, enc_output, enc_mask)
 
-        # output shape == (batch_size, hidden_size+embedding_dim)
-        output = tf.concat([output, enc_context_vector], axis=-1)
-        output = tf.math.tanh(self.W_c(output))
-        
-        # # output shape == (batch_size, vocab)
-        x = self.fc(output)
+            state_c = enc_context_vector
+            output, state_h, state_c = self.lstm(x, initial_state=(s_prev, state_c))
 
-        if inc_tags:
+            # output shape == (batch_size * 1, hidden_size)
+            output = tf.reshape(output, (-1, output.shape[2]))
+            
+            # output shape == (batch_size, vocab)
+            x = self.fc(output)
+
             return x, (state_h, state_c), (attention_weights, tag_attention_weights)
         else:
+            # passing the concatenated vector to the LSTM
+            output, state_h, state_c = self.lstm(x, initial_state=state)
+
+            # output shape == (batch_size * 1, hidden_size)
+            output = tf.reshape(output, (-1, output.shape[2]))
+            enc_context_vector, attention_weights = self.enc_attention(state_h, enc_output, enc_mask)
+
+            # output shape == (batch_size, hidden_size+embedding_dim)
+            output = tf.concat([output, enc_context_vector], axis=-1)
+            output = tf.math.tanh(self.W_c(output))
+            
+            # output shape == (batch_size, vocab)
+            x = self.fc(output)
+
             return x, (state_h, state_c), attention_weights

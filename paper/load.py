@@ -22,6 +22,9 @@ parser.add_argument("--dir", dest="dir", required=False,
 parser.add_argument("--use-weights", dest="use_weights", required=False,
                     help="use weight files if enabled. Otherwise checkpoints are used for loading models",
                     action='store_true')
+parser.add_argument("--ckpt-dir", dest="ckpt_dir", required=False,
+                    help="directory to load checkpoints from (relative to dir)", default=None,
+                    type=str)
 parser.add_argument("--test-file", dest="test_file", required=False,
                     help="if supplied, run tests on given file", default=None,
                     type=str)
@@ -58,6 +61,21 @@ if inc_tags:
 lang = pickle.load(open(os.path.join(args.dir, 'tokenizer'), 'rb'))
 if inc_tags:
     tag_tokenizer = pickle.load(open(os.path.join(args.dir, 'tokenizer'), 'rb'))
+
+if args.ckpt_dir:
+    assert os.path.exists(os.path.join(args.dir, args.ckpt_dir)):
+    ckpt_dir = os.path.join(args.dir, args.ckpt_dir)
+elif not args.use_weights:
+    if os.path.exists(os.path.join(args.dir, 'tf_ckpts')):
+        ckpt_dir = os.path.join(args.dir, 'tf_ckpts')
+    elif os.path.exists(os.path.join(args.dir, 'val_ckpt')):
+        ckpt_dir = os.path.join(args.dir, 'val_ckpt')
+    elif os.path.exists(os.path.join(args.dir, 'acc_ckpt')):
+        ckpt_dir = os.path.join(args.dir, 'acc_ckpt')
+    elif os.path.exists(os.path.join(args.dir, 'latest_ckpt')):
+        ckpt_dir = os.path.join(args.dir, 'latest_ckpt')
+    elif os.path.exists(os.path.join(args.dir, 'copy_ckpt')):
+        ckpt_dir = os.path.join(args.dir, 'copy_ckpt')
 
 def _create_dataset(path, return_tf_dataset=False):
     lines = io.open(path, encoding='UTF-8').read().strip().split('\n')
@@ -163,7 +181,7 @@ if inc_tags:
 checkpoint = tf.train.Checkpoint(**ckpt_dict)
 
 # manager = tf.train.CheckpointManager(checkpoint, os.path.join(args.dir, 'tf_ckpts'), max_to_keep=3)
-latest_ckpt = tf.train.latest_checkpoint(os.path.join(args.dir, 'tf_ckpts'))
+latest_ckpt = tf.train.latest_checkpoint(ckpt_dir)
 
 if args.use_weights:
     encoder.load_weights(os.path.join(args.dir, 'encoder', 'enc-wt'))
