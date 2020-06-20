@@ -1,5 +1,7 @@
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"]="true"
 
 import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
@@ -11,7 +13,7 @@ import numpy as np
 import json
 import pickle
 
-from att_module import Encoder, BahdanauAttention, Decoder
+from module import Encoder, TagEncoder, Decoder, create_padding_mask
 from helper import *
 
 parser = argparse.ArgumentParser(description="Load character seq2seq model", 
@@ -26,7 +28,10 @@ parser.add_argument("--ckpt-dir", dest="ckpt_dir", required=False,
                     help="directory to load checkpoints from (relative to dir)", default=None,
                     type=str)
 parser.add_argument("--test-file", dest="test_file", required=False,
-                    help="if supplied, run tests on given file", default=None,
+                    help="if supplied, run tests on given file", default='',
+                    type=str)
+parser.add_argument("--out-file", dest="out_file", required=False,
+                    help="output of test file", default=None,
                     type=str)
 args = parser.parse_args()
 
@@ -37,14 +42,10 @@ START_TOK, END_TOK = '<', '>'
 options = json.load(open(os.path.join(args.dir, 'options.json'), 'r'))
 
 # Populate variables using options
-max_length_targ = options['max_length_targ'] \
-    if 'max_length_targ' in options.keys() else 15
-max_length_inp = options['max_length_inp'] \
-    if 'max_length_inp' in options.keys() else 15
 clip_length = options['clip_length'] \
     if 'clip_length' in options.keys() else None
 inc_tags = options['inc_tags'] \
-    if 'inc_tags' in options.keys else False
+    if 'inc_tags' in options.keys() else False
 
 EPOCHS = options['epochs'] \
     if 'epochs' in options.keys() else 100
@@ -52,18 +53,29 @@ BATCH_SIZE = options['batch_size'] \
     if 'batch_size' in options.keys() else 10
 embedding_dim = options['embedding']
 units = options['units']
-vocab_inp_size = len(lang.word_index)+1
-vocab_tar_size = len(lang.word_index)+1
-if inc_tags:
-    vocab_tag_size = len(tag_tokenizer.word_index)+1
+
+num_samples = options['num_samples']
 
 # Load tokenizer
 lang = pickle.load(open(os.path.join(args.dir, 'tokenizer'), 'rb'))
 if inc_tags:
-    tag_tokenizer = pickle.load(open(os.path.join(args.dir, 'tokenizer'), 'rb'))
+    tag_tokenizer = pickle.load(open(os.path.join(args.dir, 'tag_tokenizer'), 'rb'))
+
+max_length_targ = options['max_length_targ'] \
+    if 'max_length_targ' in options.keys() else 15
+max_length_inp = options['max_length_inp'] \
+    if 'max_length_inp' in options.keys() else 15
+if inc_tags:
+    max_length_tag = options['max_length_tag'] \
+        if 'max_length_tag' in options.keys() else 5
+
+vocab_inp_size = len(lang.word_index)+2
+vocab_tar_size = len(lang.word_index)+2
+if inc_tags:
+    vocab_tag_size = len(tag_tokenizer.word_index)+2
 
 if args.ckpt_dir:
-    assert os.path.exists(os.path.join(args.dir, args.ckpt_dir)):
+    assert os.path.exists(os.path.join(args.dir, args.ckpt_dir))
     ckpt_dir = os.path.join(args.dir, args.ckpt_dir)
 elif not args.use_weights:
     if os.path.exists(os.path.join(args.dir, 'tf_ckpts')):
@@ -97,31 +109,47 @@ def _create_dataset(path, return_tf_dataset=False):
 
     return input_tensor_train, input_tensor_val, target_tensor_train, target_tensor_val
 
-def evaluate(sentence, attention_output=False):
+def evaluate(sentence, tags, attention_output=False, inc_tags=False):
     if attention_output:
         attention_plot = np.zeros((max_length_targ, max_length_inp))
 
     sentence = preprocess_sentence(sentence, clip_length)
 
-    inputs = [lang.word_index[i] for i in sentence]
-    inputs = tf.keras.preprocessing.sequence.pad_sequences([inputs],
+    inputs = lang.texts_to_sequences([sentence])
+    inputs = tf.keras.preprocessing.sequence.pad_sequences(inputs,
                                                          maxlen=max_length_inp,
                                                          padding='post')
     inputs = tf.convert_to_tensor(inputs)
+    enc_mask = create_padding_mask(inputs)
+
+    if inc_tags:
+        tag_input = preprocess_tags(tags)
+        tag_input = tag_tokenizer.texts_to_sequences([tag_input])
+        tag_input = tf.keras.preprocessing.sequence.pad_sequences(tag_input,
+                                                         maxlen=max_length_tag,
+                                                         padding='post')
+        tag_input = tf.convert_to_tensor(tag_input)
+
+        tag_mask = create_padding_mask(tag_input, 'transformer')
+        tag_output = tag_encoder(tag_input, training=False, mask=tag_mask)
+    else:
+        tag_output, tag_mask = None, None
 
     result = ''
 
-    hidden = [tf.zeros((1, units))]
-    enc_out, enc_hidden, enc_c = encoder(inputs, hidden)
+    enc_state = encoder.initial_state(1)
+    enc_out, enc_hidden, enc_c = encoder(inputs, enc_state)
 
-    dec_hidden = enc_hidden
+    dec_states = (enc_hidden, enc_c)
     dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
 
     for t in range(max_length_targ):
-        predictions, dec_hidden, attention_weights = decoder(dec_input,
-                                                             dec_hidden,
-                                                             enc_out)
-
+        predictions, dec_states, attention_weights = decoder(dec_input,
+                                                             dec_states,
+                                                             enc_out,
+                                                             tag_vecs=tag_output,
+                                                             inc_tags=inc_tags)
+        
         if attention_output:
             # storing the attention weights to plot later on
             attention_weights = tf.reshape(attention_weights, (-1, ))
@@ -145,19 +173,19 @@ def evaluate(sentence, attention_output=False):
     else:
         return result, sentence
 
-encoder = Encoder(vocab_inp_size, embedding_dim, units, BATCH_SIZE)
-decoder = Decoder(vocab_tar_size, embedding_dim, units, BATCH_SIZE)
-optimizer = tf.keras.optimizers.Adam()
-loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
-    from_logits=True, reduction='none')
-
+encoder = Encoder(vocab_inp_size, embedding_dim, units)
+decoder = Decoder(vocab_tar_size, embedding_dim, units, inc_tags=inc_tags)
 if inc_tags:
     params = options['tag_encoder']
     tag_encoder = TagEncoder(num_layers = params['num_layers'], 
-                             d_model = params['units'], 
+                             d_model = params['d_model'], 
                              num_heads = params['num_heads'], 
                              dff = params['dff'],
                              input_vocab_size = vocab_tag_size)
+
+optimizer = tf.keras.optimizers.Adam()
+loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
+    from_logits=True, reduction='none')
 
 def loss_function(real, pred):
     mask = tf.math.logical_not(tf.math.equal(real, 0))
@@ -193,3 +221,31 @@ else:
         print("Restored from {}".format(latest_ckpt))
     else:
         print("Checkpoint not found. Initializing from scratch.")
+
+if os.path.exists(args.test_file):
+    out_file = args.out_file if args.out_file else 'out_test.csv'
+
+    with open(os.path.join(args.test_file), 'r') as f, \
+         open(os.path.join(args.dir, out_file), 'w') as o:
+        corr = 0
+        faul = 0
+        for i, line in enumerate(f):
+            if i >= min(2000, num_samples):
+                break
+            line = line.strip()
+            tag, word, lemma = line.split('\t')
+            out, inp = evaluate(word, tag, inc_tags=inc_tags)
+            out, inp = out[:-1], inp[1:-1]
+            if clip_length is None:
+                if out == lemma:
+                    corr += 1
+                else:
+                    faul += 1
+            else:
+                if out == lemma[-clip_length:]:
+                    corr += 1
+                else:
+                    faul += 1    
+            o.write('{}\t{}\t{}\t{}\n'.format(word,lemma,out,inp))
+        o.write('{} {}'.format(corr, faul))
+

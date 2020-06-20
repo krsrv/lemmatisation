@@ -127,9 +127,9 @@ vocab_tag_size = len(tag_tokenizer.word_index)+2
 logger.debug('Units %d' % units)
 logger.debug('Embedding dim %d' % embedding_dim)
 logger.debug('Batch size %d' % BATCH_SIZE)
-logger.debug('Vocabulary size %d' % (len(lang.word_index)+1))
+logger.debug('Vocabulary size %d' % (vocab_inp_size))
 if inc_tags:
-    logger.debug('Tag size %d' % (len(tag_tokenizer.word_index)+1))
+    logger.debug('Tag size %d' % (vocab_tag_size))
 
 ## Save tokenizers
 save_tokeniser(lang, os.path.join(OUT_DIR, 'tokenizer'))
@@ -240,6 +240,7 @@ options = {
     'inc_tags': inc_tags
 }
 if inc_tags:
+    options['max_length_tag'] = max_length_tag
     options['tag_encoder'] = {
         'num_layers': 1,
         'd_model': units,
@@ -438,6 +439,12 @@ while True:
         val_total_loss += batch_loss
         total_accuracy += batch_accuracy
     
+    if epoch % 5 == 0:
+        text = lang.sequences_to_texts([input_tensor_train[0]])[0]
+        text = text.replace(' ', '')
+        fig = 'warmup-' + str(epoch) + '.png'
+        output(text[1:-1], os.path.join(OUT_DIR, fig))
+
     val_total_loss /= (len(X_val) // BATCH_SIZE)
     total_accuracy /= (len(X_val))
     
@@ -481,10 +488,11 @@ for epoch in range(EPOCHS):
     
     # Update checkpoint step variable and save
     checkpoint.step.assign_add(1)
-    if epoch % 10 == 0:
+    if epoch % 5 == 0:
         text = lang.sequences_to_texts([input_tensor_train[0]])[0]
         text = text.replace(' ', '')
-        output(text[1:-1], os.path.join(OUT_DIR, './' + str(epoch) + '.png'))
+        fig = 'main-' + str(epoch) + '.png'
+        output(text[1:-1], os.path.join(OUT_DIR, fig))
     
     loss.append(total_loss / steps_per_epoch_train)
     print('Time taken for 1 epoch {} sec'.format(time.time() - start))

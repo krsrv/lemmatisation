@@ -218,7 +218,7 @@ class SingleHeadTransformerEncoderLayer(tf.keras.layers.Layer):
 
         return out1
 
-class TagEncoder(tf.keras.layers.Layer):
+class TagEncoder(tf.keras.Model):
     def __init__(self, num_layers, d_model, num_heads, dff, input_vocab_size,
            rate=0.1):
         super(TagEncoder, self).__init__()
