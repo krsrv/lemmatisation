@@ -112,6 +112,7 @@ def _create_dataset(path, return_tf_dataset=False):
 def evaluate(sentence, tags, attention_output=False, inc_tags=False):
     if attention_output:
         attention_plot = np.zeros((max_length_targ, max_length_inp))
+        tag_attention_plot = np.zeros((max_length_targ, max_length_tag))
 
     sentence = preprocess_sentence(sentence, clip_length)
 
@@ -123,8 +124,8 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
     enc_mask = create_padding_mask(inputs)
 
     if inc_tags:
-        tag_input = preprocess_tags(tags)
-        tag_input = tag_tokenizer.texts_to_sequences([tag_input])
+        tags = preprocess_tags(tags)
+        tag_input = tag_tokenizer.texts_to_sequences([tags])
         tag_input = tf.keras.preprocessing.sequence.pad_sequences(tag_input,
                                                          maxlen=max_length_tag,
                                                          padding='post')
@@ -152,26 +153,36 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
         
         if attention_output:
             # storing the attention weights to plot later on
-            attention_weights = tf.reshape(attention_weights, (-1, ))
-            attention_plot[t] = attention_weights.numpy()
+            if inc_tags:
+                buff = tf.reshape(attention_weights[0], (-1, ))
+                attention_plot[t] = buff.numpy()
+
+                buff = tf.reshape(attention_weights[1], (-1, ))
+                tag_attention_plot[t] = buff.numpy()
+            else:
+                buff = tf.reshape(attention_weights[0], (-1, ))
+                attention_plot[t] = buff.numpy()
 
         predicted_id = tf.argmax(predictions[0]).numpy()
 
         result += lang.index_word[predicted_id]
 
         if lang.index_word[predicted_id] == END_TOK:
-            if attention_output:
-                return result, sentence, attention_plot
-            else:
-                return result, sentence
+            break
 
         # the predicted ID is fed back into the model
         dec_input = tf.expand_dims([predicted_id], 0)
 
     if attention_output:
-        return result, sentence, attention_plot
+        if inc_tags:
+            return result, (sentence, tags), (attention_plot, tag_attention_plot)
+        else:
+            return result, sentence, attention_plot
     else:
-        return result, sentence
+        if inc_tags:
+            return result, (sentence, tags)
+        else:
+            return result, sentence
 
 encoder = Encoder(vocab_inp_size, embedding_dim, units)
 decoder = Decoder(vocab_tar_size, embedding_dim, units, inc_tags=inc_tags)
@@ -235,17 +246,20 @@ if os.path.exists(args.test_file):
             line = line.strip()
             tag, word, lemma = line.split('\t')
             out, inp = evaluate(word, tag, inc_tags=inc_tags)
-            out, inp = out[:-1], inp[1:-1]
-            if clip_length is None:
-                if out == lemma:
-                    corr += 1
-                else:
-                    faul += 1
+            out = out[:-1]
+            if inc_tags:
+                word_inp = inp[0][1:-1]
+                tag_inp = inp[1]
+                output = '{}\t{}\t{}\t{}\t{}'.format(word, lemma, out, word_inp, tag_inp)
             else:
-                if out == lemma[-clip_length:]:
-                    corr += 1
-                else:
-                    faul += 1    
-            o.write('{}\t{}\t{}\t{}\n'.format(word,lemma,out,inp))
-        o.write('{} {}'.format(corr, faul))
+                word_inp = inp[1:-1]
+                output = '{}\t{}\t{}\t{}'.format(word, lemma, out, word_inp)
+            if clip_length:
+                lemma_clipped = lemma[-clip_length]
+            else:
+                lemma_clipped = lemma
+            corr += (out == lemma_clipped)
+            faul += (out != lemma_clipped)
+            print(output, file=o)
+        print('{} {}'.format(corr, faul), file=o)
 

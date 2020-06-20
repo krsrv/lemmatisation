@@ -232,7 +232,7 @@ class TagEncoder(tf.keras.Model):
         self.embedding = tf.keras.layers.Embedding(input_vocab_size, d_model)
 
         if num_layers == 1 and num_heads == 1:
-            self.enc_layers = [SingleHeadTransformerEncoderLayer(d_model)]
+            self.enc_layers = [SingleHeadTransformerEncoderLayer(d_model, rate)]
         else:
             self.enc_layers = [TransformerEncoderLayer(d_model, num_heads, dff, rate) 
                        for _ in range(num_layers)]
@@ -307,8 +307,6 @@ class Decoder(tf.keras.Model):
 
             return x, (state_h, state_c), (attention_weights, tag_attention_weights)
         else:
-            assert tag_vecs is None
-
             # passing the concatenated vector to the LSTM
             output, state_h, state_c = self.lstm(x, initial_state=state)
 

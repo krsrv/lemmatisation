@@ -33,43 +33,18 @@ def preprocess_sentence(w, clip_length=None):
 
 # 1. Remove the accents
 # 2. Clean the sentences
-# 3. Return word pairs in the format: [Tag, Word, Lemma]
-def create_dataset(path, num_examples=None, clip_length=None):
+# 3. Return word pairs in the format: [Word, Lemma]
+def create_dataset(path, num_examples, clip_length):
     lines = io.open(path, encoding='UTF-8').read().strip().split('\n')
     word_pairs = []
     for l in lines[:num_examples]:
         ws = l.split('\t')
         word_pairs.append([
             preprocess_tags(ws[0]), 
-            preprocess_sentence(ws[1], clip_length=clip_length),
-            preprocess_sentence(ws[2], clip_length=clip_length)
+            preprocess_sentence(ws[1]),
+            preprocess_sentence(ws[2])
         ])
     return zip(*word_pairs)
-
-def create_tokenizer(*files):
-    lang_tokenizer = tf.keras.preprocessing.text.Tokenizer(
-            filters='', lower=False, char_level=True)
-    tag_tokenizer = tf.keras.preprocessing.text.Tokenizer(
-            filters='', lower=False)
-    
-    word_pairs = []
-    
-    for File in files:
-        lines = io.open(File, encoding='UTF-8').read().strip().split('\n')
-        word_pairs = []
-        for l in lines:
-            ws = l.split('\t')
-            word_pairs.append([
-                preprocess_tags(ws[0]), 
-                preprocess_sentence(ws[1]),
-                preprocess_sentence(ws[2])
-            ])
-
-    tags, words, lemmas = zip(*word_pairs)
-    tag_tokenizer.fit_on_texts(tags + ('COPY',))
-    lang_tokenizer.fit_on_texts(words + lemmas)
-
-    return (lang_tokenizer, tag_tokenizer)
 
 def tokenize(lang, lang_tokenizer=None):
     # If tokenizer is supplied, assume that it is already fit to the input lang

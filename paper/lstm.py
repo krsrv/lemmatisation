@@ -36,6 +36,12 @@ parser.add_argument("--embed-dim", dest="embed_dim", required=False,
 parser.add_argument("--batch-size", dest="batch_size", required=False,
                     help="Batch size", default=10,
                     type=int)
+parser.add_argument("--lr", dest="lr", required=False,
+                    help="Initial learning rate", default=0.001,
+                    type=float)
+parser.add_argument("--dropout", dest="dropout", required=False,
+                    help="Dropout rate", default=0.2,
+                    type=float)
 parser.add_argument("--clip-length", dest="clip_length", required=False,
                     help="Clip length", default=None,
                     type=int)
@@ -78,8 +84,9 @@ inc_tags = not args.exc_tags
 
 # Load data from files to variables
 if os.path.exists(dev_file):
+    tokenizer = create_tokenizer(input_file, dev_file)
     tensor, tokenizer = load_dataset(
-        input_file, num_samples, clip_length)
+        input_file, num_samples, clip_length, tokenizer=tokenizer)
     tensor_val, _ = load_dataset(
         dev_file, num_samples, clip_length, tokenizer=tokenizer)
 
@@ -90,8 +97,9 @@ if os.path.exists(dev_file):
     # target_tensor = pad(target_tensor_train, target_tensor_val)
     # tag_tensor = pad(tag_tensor_train, tag_tensor_val)
 else:
+    tokenizer = create_tokenizer(input_file)
     tensor, tokenizer = load_dataset(
-        input_file, num_samples, clip_length)
+        input_file, num_samples, clip_length, tokenizer=tokenizer)
 
     input_tensor, target_tensor, tag_tensor = tensor[0], tensor[1], tensor[2]
     # Creating training and validation sets using an 80-20 split
@@ -173,14 +181,16 @@ val_dataset = tf.data.Dataset.from_tensor_slices(
 dataset = dataset.batch(BATCH_SIZE, drop_remainder=True)
 val_dataset = val_dataset.batch(BATCH_SIZE, drop_remainder=True)
 
-encoder = Encoder(vocab_inp_size, embedding_dim, units)
+encoder = Encoder(vocab_inp_size, embedding_dim, units, rate=args.dropout)
 tag_encoder = None
 
 if inc_tags:
     tag_encoder = TagEncoder(num_layers=1, d_model=units, num_heads=1, 
-                         dff=256, input_vocab_size=vocab_tag_size)
+                         dff=256, input_vocab_size=vocab_tag_size,
+                         rate=args.dropout)
 
-decoder = Decoder(vocab_tar_size, embedding_dim, units, inc_tags=inc_tags)
+decoder = Decoder(vocab_tar_size, embedding_dim, units, 
+                  inc_tags=inc_tags, rate=args.dropout)
 
 class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
   def __init__(self, d_model, warmup_steps=4000):
@@ -199,7 +209,7 @@ class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
 
 learning_rate = CustomSchedule(units)
 # optimizer = tf.keras.optimizers.Adam(learning_rate, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
-optimizer = tf.keras.optimizers.Adam()
+optimizer = tf.keras.optimizers.Adam(args.lr)
 loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
     from_logits=True, reduction='none')
 
@@ -237,7 +247,11 @@ options = {
     'batch_size': BATCH_SIZE,
     'max_length_inp': max_length_inp,
     'max_length_targ': max_length_targ,
-    'inc_tags': inc_tags
+    'inc_tags': inc_tags,
+    'lr': args.lr,
+    'dropout': args.dropout,
+    'input_dir': DATA_DIR,
+    'output_dir': OUT_DIR
 }
 if inc_tags:
     options['max_length_tag'] = max_length_tag
@@ -254,6 +268,7 @@ print('Files and logs saved to %s' % OUT_DIR)
 def evaluate(sentence, tags, attention_output=False, inc_tags=False):
     if attention_output:
         attention_plot = np.zeros((max_length_targ, max_length_inp))
+        tag_attention_plot = np.zeros((max_length_targ, max_length_tag))
 
     sentence = preprocess_sentence(sentence, clip_length)
 
@@ -265,8 +280,8 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
     enc_mask = create_padding_mask(inputs)
 
     if inc_tags:
-        tag_input = preprocess_tags(tags)
-        tag_input = tag_tokenizer.texts_to_sequences([tag_input])
+        tags = preprocess_tags(tags)
+        tag_input = tag_tokenizer.texts_to_sequences([tags])
         tag_input = tf.keras.preprocessing.sequence.pad_sequences(tag_input,
                                                          maxlen=max_length_tag,
                                                          padding='post')
@@ -279,8 +294,7 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
 
     result = ''
 
-    enc_state = encoder.initial_state(1)
-    enc_out, enc_hidden, enc_c = encoder(inputs, enc_state, training=False)
+    enc_out, enc_hidden, enc_c = encoder(inputs, training=False)
 
     dec_states = (enc_hidden, enc_c)
     dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
@@ -294,31 +308,53 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
         
         if attention_output:
             # storing the attention weights to plot later on
-            attention_weights = tf.reshape(attention_weights, (-1, ))
-            attention_plot[t] = attention_weights.numpy()
+            if inc_tags:
+                buff = tf.reshape(attention_weights[0], (-1, ))
+                attention_plot[t] = buff.numpy()
+
+                buff = tf.reshape(attention_weights[1], (-1, ))
+                tag_attention_plot[t] = buff.numpy()
+            else:
+                buff = tf.reshape(attention_weights[0], (-1, ))
+                attention_plot[t] = buff.numpy()
 
         predicted_id = tf.argmax(predictions[0]).numpy()
 
         result += lang.index_word[predicted_id]
 
         if lang.index_word[predicted_id] == END_TOK:
-            if attention_output:
-                return result, sentence, attention_plot
-            else:
-                return result, sentence
+            break
 
         # the predicted ID is fed back into the model
         dec_input = tf.expand_dims([predicted_id], 0)
 
     if attention_output:
-        return result, sentence, attention_plot
+        if inc_tags:
+            return result, (sentence, tags), (attention_plot, tag_attention_plot)
+        else:
+            return result, sentence, attention_plot
     else:
-        return result, sentence
+        if inc_tags:
+            return result, (sentence, tags)
+        else:
+            return result, sentence
 
-def output(sentence, fname):
-    ou, ip, at = evaluate(sentence, '', True)
-    at = at[:len(ou), :len(ip)]
-    plot_attention(at, ip, ou, fname)
+def output(sentence, fname, tags=None, inc_tags=False):
+    ou, ip, at = evaluate(sentence, tags, attention_output=True, inc_tags=inc_tags)
+    if inc_tags:
+        plot_attention(
+            at[0][:len(ou), :len(ip[0])], 
+            ip[0], ou, 
+            os.path.join(OUT_DIR, fname + '-enc.png'))
+        plot_attention(
+            at[1][:len(ou), :len(ip[1].split())], 
+            ip[1], ou, 
+            os.path.join(OUT_DIR, fname + '-tag.png'))
+    else:
+        plot_attention(
+            at[:len(ou), :len(ip)], 
+            ip, ou, 
+            os.path.join(OUT_DIR, fname + '-enc.png'))
     return ou
 
 def loss_function(real, pred):
@@ -439,9 +475,9 @@ while True:
     
     if epoch % 5 == 0:
         text = lang.sequences_to_texts([input_tensor_train[0]])[0]
+        tags = 'COPY'
         text = text.replace(' ', '')
-        fig = 'warmup-' + str(epoch) + '.png'
-        output(text[1:-1], os.path.join(OUT_DIR, fig))
+        output(text[1:-1], 'warmup-' + str(epoch), tags=tags, inc_tags=inc_tags)
 
     val_total_loss /= (len(X_val) // BATCH_SIZE)
     total_accuracy /= (len(X_val))
@@ -489,8 +525,8 @@ for epoch in range(EPOCHS):
     if epoch % 5 == 0:
         text = lang.sequences_to_texts([input_tensor_train[0]])[0]
         text = text.replace(' ', '')
-        fig = 'main-' + str(epoch) + '.png'
-        output(text[1:-1], os.path.join(OUT_DIR, fig))
+        tags = lang.sequences_to_texts([tag_tensor_train[0]])[0]
+        output(text[1:-1], 'main-' + str(epoch), tags=tags, inc_tags=inc_tags)
     
     loss.append(total_loss / steps_per_epoch_train)
     print('Time taken for 1 epoch {} sec'.format(time.time() - start))
@@ -572,40 +608,46 @@ with open(os.path.join(DATA_DIR, 'test.csv'), 'r') as f, \
         line = line.strip()
         tag, word, lemma = line.split('\t')
         out, inp = evaluate(word, tag, inc_tags=inc_tags)
-        out, inp = out[:-1], inp[1:-1]
-        if clip_length is None:
-            if out == lemma:
-                corr += 1
-            else:
-                faul += 1
+        out = out[:-1]
+        if inc_tags:
+            word_inp = inp[0][1:-1]
+            tag_inp = inp[1]
+            output = '{}\t{}\t{}\t{}\t{}'.format(word, lemma, out, word_inp, tag_inp)
         else:
-            if out == lemma[-clip_length:]:
-                corr += 1
-            else:
-                faul += 1    
-        o.write('{}\t{}\t{}\t{}\n'.format(word,lemma,out,inp))
-    o.write('{} {}'.format(corr, faul))
+            word_inp = inp[1:-1]
+            output = '{}\t{}\t{}\t{}'.format(word, lemma, out, word_inp)
+        if clip_length:
+            lemma_clipped = lemma[-clip_length]
+        else:
+            lemma_clipped = lemma
+        corr += (out == lemma_clipped)
+        faul += (out != lemma_clipped)
+        print(output, file=o)
+    print('{} {}'.format(corr, faul), file=o)
 
 with open(os.path.join(DATA_DIR, 'train.csv'), 'r') as f, \
      open(os.path.join(OUT_DIR, 'train.csv'), 'w') as o:
     corr = 0
     faul = 0
     for i, line in enumerate(f):
-        if i >= min(100, num_samples):
+        if i >= min(2000, num_samples):
             break
         line = line.strip()
         tag, word, lemma = line.split('\t')
         out, inp = evaluate(word, tag, inc_tags=inc_tags)
-        out, inp = out[:-1], inp[1:-1]
-        if clip_length is None:
-            if out == lemma:
-                corr += 1
-            else:
-                faul += 1
+        out = out[:-1]
+        if inc_tags:
+            word_inp = inp[0][1:-1]
+            tag_inp = inp[1]
+            output = '{}\t{}\t{}\t{}\t{}'.format(word, lemma, out, word_inp, tag_inp)
         else:
-            if out == lemma[-clip_length:]:
-                corr += 1
-            else:
-                faul += 1    
-        o.write('{}\t{}\t{}\t{}\n'.format(word,lemma,out,inp))
-    o.write('{} {}'.format(corr, faul))
+            word_inp = inp[1:-1]
+            output = '{}\t{}\t{}\t{}'.format(word, lemma, out, word_inp)
+        if clip_length:
+            lemma_clipped = lemma[-clip_length]
+        else:
+            lemma_clipped = lemma
+        corr += (out == lemma_clipped)
+        faul += (out != lemma_clipped)
+        print(output, file=o)
+    print('{} {}'.format(corr, faul), file=o)
