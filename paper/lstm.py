@@ -1,6 +1,6 @@
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = "3"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"]="true"
 
 import tensorflow as tf
@@ -16,7 +16,7 @@ import string
 import json
 import logging
 
-from module import Encoder, Decoder, TagEncoder, create_padding_mask
+from module import Encoder, Decoder, TagEncoder, create_padding_mask, CustomCallback
 from helper import *
 
 parser = argparse.ArgumentParser(description="Train character seq2seq model", 
@@ -503,7 +503,7 @@ while True:
 # Start main phase training
 logger.info('Main phase')
 loss, val_loss, accuracy = [], [], []
-patience = 5
+callback = CustomCallback(optimizer, patience=5, cooldown=10)
 
 for epoch in range(EPOCHS):
     start = time.time()
@@ -522,7 +522,7 @@ for epoch in range(EPOCHS):
     
     # Update checkpoint step variable and save
     checkpoint.step.assign_add(1)
-    if epoch % 5 == 0:
+    if epoch % 10 == 0:
         text = lang.sequences_to_texts([input_tensor_train[0]])[0]
         text = text.replace(' ', '')
         tags = lang.sequences_to_texts([tag_tensor_train[0]])[0]
@@ -556,11 +556,11 @@ for epoch in range(EPOCHS):
 
     if len(val_loss) > 1 and val_loss[-1] < val_loss[-2]:
         main_manager['validation'].save()
-    else:
-        logger.debug('Patience now at {}'.format(patience))
-        patience -= 1
-
-    if accuracy[-1] > 0.90 or patience <= 0:
+    
+    if callback(val_loss[-1]):
+        logger.info('Learning rate now {}'.format(callback.get_lr()))
+    
+    if accuracy[-1] > 0.90:
         print('Main phase breaking')
         logger.info('Main phase finished with accuracy {}'.format(accuracy[-1]))
         main_manager['latest'].save()

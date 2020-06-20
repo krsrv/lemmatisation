@@ -1,6 +1,45 @@
 import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
 
+class CustomCallback():
+    def __init__(self, optimizer, factor=0.1, patience=5, cooldown=10):
+        self.lr = optimizer.lr.numpy()
+        self.optimizer = optimizer
+        self.factor = factor
+        self.step = 0
+        self.patience = patience
+        self.patience_count = patience
+        self.cooldown_count = 0
+        self.cooldown_active = False
+        self.cooldown = cooldown
+        self.val_loss = []
+
+    def __call__(self, val):
+        if self.step > 0:
+            if self.val_loss[-1] < val:
+                self.patience_count -= 1
+            if self.patience_count == 0:
+                self.optimizer.lr.assign(self.optimizer.lr.numpy() * self.factor)
+                self.patience_count = self.patience
+                self.cooldown_active = True
+                self.cooldown_count = 0
+
+        if self.cooldown_active:
+            if self.cooldown_count == self.cooldown:
+                self.optimizer.lr.assign(self.lr)
+                self.cooldown_count = 0
+                self.cooldown_active = False
+            else:
+                self.cooldown_count += 1
+
+        self.val_loss.append(val)
+        self.step += 1
+        
+        return self.cooldown_active
+
+    def get_lr(self):
+        return self.optimizer.lr.numpy()
+
 class BahdanauAttention(tf.keras.layers.Layer):
     def __init__(self, units):
         super(BahdanauAttention, self).__init__()
