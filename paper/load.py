@@ -138,7 +138,7 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
     result = ''
 
     enc_state = encoder.initial_state(1)
-    enc_out, enc_hidden, enc_c = encoder(inputs, enc_state)
+    enc_out, enc_hidden, enc_c = encoder(inputs, enc_state, training=False)
 
     dec_states = (enc_hidden, enc_c)
     dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
@@ -148,7 +148,7 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
                                                              dec_states,
                                                              enc_out,
                                                              tag_vecs=tag_output,
-                                                             inc_tags=inc_tags)
+                                                             training=False)
         
         if attention_output:
             # storing the attention weights to plot later on

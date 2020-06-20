@@ -280,7 +280,7 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
     result = ''
 
     enc_state = encoder.initial_state(1)
-    enc_out, enc_hidden, enc_c = encoder(inputs, enc_state)
+    enc_out, enc_hidden, enc_c = encoder(inputs, enc_state, training=False)
 
     dec_states = (enc_hidden, enc_c)
     dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
@@ -290,7 +290,7 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
                                                              dec_states,
                                                              enc_out,
                                                              tag_vecs=tag_output,
-                                                             inc_tags=inc_tags)
+                                                             training=False)
         
         if attention_output:
             # storing the attention weights to plot later on
@@ -338,7 +338,7 @@ def train_step(inp, targ, mode='main', enc_state=None, training=True,
     count = [True for _ in range(BATCH_SIZE)]
 
     with tf.GradientTape() as tape:
-        enc_output, enc_hidden, enc_c = encoder(inp, state=enc_state)
+        enc_output, enc_hidden, enc_c = encoder(inp, state=enc_state, training=training)
 
         tag_output, tag_mask = None, None
         if inc_tags:
@@ -355,9 +355,7 @@ def train_step(inp, targ, mode='main', enc_state=None, training=True,
         for t in range(1, targ.shape[1]):
             # passing enc_output to the decoder
             predictions, dec_states, _ = decoder(dec_input, dec_states, enc_output,
-                                                # tag_mask=tag_mask,
                                                 tag_vecs=tag_output,
-                                                inc_tags=inc_tags,
                                                 training=training)
 
             loss += loss_function(targ[:, t], predictions)

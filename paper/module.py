@@ -160,16 +160,19 @@ def point_wise_feed_forward_network(d_model, dff):
     ])
 
 class Encoder(tf.keras.Model):
-    def __init__(self, vocab_size, embedding_dim, enc_units):
+    def __init__(self, vocab_size, embedding_dim, enc_units, rate=0.2):
         super(Encoder, self).__init__()
         self.enc_units = enc_units
         self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
         self.lstm = tf.keras.layers.LSTM(self.enc_units,
                                        return_sequences=True,
                                        return_state=True)
+        self.dropout = tf.keras.layers.Dropout(rate)
 
-    def call(self, x, state=None, mask=None):
+    def call(self, x, state=None, mask=None, training=True):
         x = self.embedding(x)
+        x = self.dropout(x, training=training)
+
         output, state_h, state_c = self.lstm(x, initial_state=state, mask=mask)
         return output, state_h, state_c
 
@@ -177,7 +180,7 @@ class Encoder(tf.keras.Model):
         return (tf.zeros((batch_sz, self.enc_units)), tf.zeros((batch_sz, self.enc_units)))
 
 class TransformerEncoderLayer(tf.keras.layers.Layer):
-    def __init__(self, d_model, num_heads, dff, rate=0.1):
+    def __init__(self, d_model, num_heads, dff, rate=0.2):
         super(TransformerEncoderLayer, self).__init__()
 
         self.mha = MultiHeadAttention(d_model, num_heads)
@@ -201,7 +204,7 @@ class TransformerEncoderLayer(tf.keras.layers.Layer):
         return out2
 
 class SingleHeadTransformerEncoderLayer(tf.keras.layers.Layer):
-    def __init__(self, d_model, rate=0.1):
+    def __init__(self, d_model, rate=0.2):
         super(SingleHeadTransformerEncoderLayer, self).__init__()
         self.mha = MultiHeadAttention(d_model, 1)
 
@@ -220,7 +223,7 @@ class SingleHeadTransformerEncoderLayer(tf.keras.layers.Layer):
 
 class TagEncoder(tf.keras.Model):
     def __init__(self, num_layers, d_model, num_heads, dff, input_vocab_size,
-           rate=0.1):
+           rate=0.2):
         super(TagEncoder, self).__init__()
         
         self.d_model = d_model
@@ -251,7 +254,7 @@ class TagEncoder(tf.keras.Model):
         return x  # (batch_size, input_seq_len, d_model)
 
 class Decoder(tf.keras.Model):
-    def __init__(self, vocab_size, embedding_dim, units, inc_tags=False):
+    def __init__(self, vocab_size, embedding_dim, units, inc_tags=False, rate=0.2):
         super(Decoder, self).__init__()
         self.dec_units = units
         self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
@@ -259,6 +262,7 @@ class Decoder(tf.keras.Model):
                                        return_sequences=True,
                                        return_state=True)
         self.fc = tf.keras.layers.Dense(vocab_size)
+        self.inc_tags = inc_tags
 
         if inc_tags:
             # used for attention
@@ -269,13 +273,18 @@ class Decoder(tf.keras.Model):
 
         self.W_c = tf.keras.layers.Dense(units, use_bias=False)
 
-    def call(self, x, state, enc_output, tag_vecs=None, inc_tags=False,
+        self.dropout1 = tf.keras.layers.Dropout(rate)
+        self.dropout2 = tf.keras.layers.Dropout(rate)
+
+    def call(self, x, state, enc_output, tag_vecs=None, 
              enc_mask=None, tag_mask=None, training=True):
         # enc_output shape == (batch_size, max_length, hidden_size)
         # x shape after passing through embedding == (batch_size, 1, embedding_dim)
         x = self.embedding(x)
 
-        if inc_tags:
+        if self.inc_tags:
+            assert tag_vecs is not None
+
             s_prev, _ = state
             # Attend over tag vectors
             tag_context_vector, tag_attention_weights = self.tag_attention(s_prev, tag_vecs, tag_mask)
@@ -294,9 +303,12 @@ class Decoder(tf.keras.Model):
             
             # output shape == (batch_size, vocab)
             x = self.fc(output)
+            x = self.dropout1(x, training=training)
 
             return x, (state_h, state_c), (attention_weights, tag_attention_weights)
         else:
+            assert tag_vecs is None
+
             # passing the concatenated vector to the LSTM
             output, state_h, state_c = self.lstm(x, initial_state=state)
 
@@ -310,5 +322,6 @@ class Decoder(tf.keras.Model):
             
             # output shape == (batch_size, vocab)
             x = self.fc(output)
+            x = self.dropout2(x, training=training)
 
             return x, (state_h, state_c), attention_weights
