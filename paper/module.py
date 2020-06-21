@@ -2,40 +2,33 @@ import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
 
 class CustomCallback():
-    def __init__(self, optimizer, factor=0.1, patience=5, cooldown=10):
+    def __init__(self, optimizer, factor=0.1, patience=5, cooldown=10, min_delta=0.0001):
         self.lr = optimizer.lr.numpy()
         self.optimizer = optimizer
         self.factor = factor
-        self.step = 0
         self.patience = patience
-        self.patience_count = patience
-        self.cooldown_count = 0
-        self.cooldown_active = False
+        self.wait = 0   # Patience counter
+        self.cooldown_counter = 0
         self.cooldown = cooldown
-        self.val_loss = []
+        self.best = 1e9 # Best metric to compare against
+        self.min_delta = min_delta
 
-    def __call__(self, val):
-        if self.step > 0:
-            if self.val_loss[-1] < val:
-                self.patience_count -= 1
-            if self.patience_count == 0:
+    def __call__(self, current):
+        if self.cooldown_counter > 0:
+            self.cooldown_counter -= 1
+            self.wait = 0
+
+        if current - self.min_delta <= self.best:
+            self.best = current
+            self.wait = 0
+        elif self.cooldown_counter == 0:
+            self.wait += 1
+            if self.wait >= self.patience:
                 self.optimizer.lr.assign(self.optimizer.lr.numpy() * self.factor)
-                self.patience_count = self.patience
-                self.cooldown_active = True
-                self.cooldown_count = 0
-
-        if self.cooldown_active:
-            if self.cooldown_count == self.cooldown:
-                self.optimizer.lr.assign(self.lr)
-                self.cooldown_count = 0
-                self.cooldown_active = False
-            else:
-                self.cooldown_count += 1
-
-        self.val_loss.append(val)
-        self.step += 1
+                self.cooldown_counter = self.cooldown
+                self.wait = 0
         
-        return self.cooldown_active
+        return self.cooldown_counter > 0
 
     def get_lr(self):
         return self.optimizer.lr.numpy()

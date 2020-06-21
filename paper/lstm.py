@@ -53,6 +53,8 @@ parser.add_argument("--inp-dir", dest="inp_dir", required=False,
                     type=str)
 parser.add_argument("--exc-tags", dest="exc_tags", required=False,
                     help="Use tags", action='store_true')
+parser.add_argument("--no-copy", dest="copy", required=False,
+                    help="Skip copying/warm-up phase", action='store_false')
 args = parser.parse_args()
 
 # Create new output directory
@@ -438,7 +440,7 @@ def train_step(inp, targ, mode='main', enc_state=None, training=True,
 
 # Warm-up until 75% accuracy:
 logger.info('Warm-up phase')
-while True:
+while args.copy:
     start = time.time()
     total_loss = 0
     
