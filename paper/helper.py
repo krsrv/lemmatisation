@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-import matplotlib.font_manager as mfm
+from  matplotlib.font_manager import FontProperties
 
 import re
 import io
@@ -171,20 +171,20 @@ def plot_attention(attention, sentence, predicted_sentence, fname=None):
     ax = fig.add_subplot(1, 1, 1)
     ax.matshow(attention, cmap='viridis')
     
-    prop = mfm.FontProperties(fname='Nirmala.ttf')
+    prop = FontProperties(fname='Nirmala.ttf')
     # fontdict = {'fontsize': 16}
-    ax.tick_params(labelsize=16)
+    # ax.tick_params(labelsize=16)
     
     ax.xaxis.set_label_text('Input')
     ax.yaxis.set_label_text('Output')
     
-    ax.set_xticklabels('S'+sentence, fontproperties=prop, rotation=90)
-    ax.set_yticklabels('S'+predicted_sentence, fontproperties=prop)
+    ax.set_xticklabels([''] + sentence, fontproperties=prop, rotation=90)
+    ax.set_yticklabels([''] + predicted_sentence, fontproperties=prop)
     ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
     ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
 
     if fname:
-        plt.savefig(fname, bbox_inches='tight')
+        fig.savefig(fname, bbox_inches='tight')
     else:
         plt.show()
 

@@ -86,6 +86,7 @@ clip_length = args.clip_length
 input_file = os.path.join(DATA_DIR, 'train.csv')
 dev_file = os.path.join(DATA_DIR, 'dev.csv')
 inc_tags = not args.exc_tags
+mask_level = args.mask
 
 # Load data from files to variables
 if os.path.exists(dev_file):
@@ -197,23 +198,6 @@ if inc_tags:
 decoder = Decoder(vocab_tar_size, embedding_dim, units, 
                   inc_tags=inc_tags, rate=args.dropout)
 
-class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
-  def __init__(self, d_model, warmup_steps=4000):
-    super(CustomSchedule, self).__init__()
-    
-    self.d_model = d_model
-    self.d_model = tf.cast(self.d_model, tf.float32)
-
-    self.warmup_steps = warmup_steps
-    
-  def __call__(self, step):
-    arg1 = tf.math.rsqrt(step)
-    arg2 = step * (self.warmup_steps ** -1.5)
-    
-    return tf.math.rsqrt(self.d_model) * tf.math.minimum(arg1, arg2)
-
-learning_rate = CustomSchedule(units)
-# optimizer = tf.keras.optimizers.Adam(learning_rate, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
 optimizer = tf.keras.optimizers.Adam(args.lr)
 loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
     from_logits=True, reduction='none')
@@ -258,7 +242,7 @@ options = {
     'input_dir': DATA_DIR,
     'output_dir': OUT_DIR,
     'warmup': args.copy,
-    'mask': args.mask
+    'mask': mask_level
 }
 if inc_tags:
     options['max_length_tag'] = max_length_tag
@@ -307,7 +291,7 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0):
     dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
     if mask == 1 or mask == 2:
         enc_mask = create_padding_mask(inputs, 'luong')
-        tag_mask = create_padding_mask(tag_input, 'luong')
+        tag_mask = create_padding_mask(tag_input, 'luong') if inc_tags else None
     else:
         enc_mask, tag_mask = None, None
 
@@ -352,21 +336,24 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0):
         else:
             return result, sentence
 
-def output(sentence, fname, tags=None, inc_tags=False):
-    ou, ip, at = evaluate(sentence, tags, attention_output=True, inc_tags=inc_tags)
+def output(sentence, fname, tags=None, inc_tags=False, mask=mask_level):
+    ou, ip, at = evaluate(sentence, tags, 
+                          attention_output=True, 
+                          inc_tags=inc_tags,
+                          mask=mask_level)
     if inc_tags:
         plot_attention(
             at[0][:len(ou), :len(ip[0])], 
-            ip[0], ou, 
+            [x for x in ip[0]], [x for x in ou], 
             os.path.join(OUT_DIR, fname + '-enc.png'))
         plot_attention(
-            at[1][:len(ou), :len(ip[1].split())], 
-            ip[1], ou, 
+            at[1][:len(ou), :len(ip[1].split())+1], 
+            ip[1].split() + ['blank'], [x for x in ou], 
             os.path.join(OUT_DIR, fname + '-tag.png'))
     else:
         plot_attention(
             at[:len(ou), :len(ip)], 
-            ip, ou, 
+            [x for x in ip], [x for x in ou],
             os.path.join(OUT_DIR, fname + '-enc.png'))
     return ou
 
@@ -381,13 +368,13 @@ def loss_function(real, pred):
 
 @tf.function
 def train_step(inp, targ, mode='main', enc_state=None, training=True,
-        tag_inp=None, inc_tags=False, return_outputs=False):
+        tag_inp=None, inc_tags=False, return_outputs=False, mask=0):
     loss = 0
     outputs = [[] for _ in range(BATCH_SIZE)]
     count = [True for _ in range(BATCH_SIZE)]
 
     with tf.GradientTape() as tape:
-        enc_mask = create_padding_mask(inputs, 'lstm') if mask == 2 else None
+        enc_mask = create_padding_mask(inp, 'lstm') if mask == 2 else None
         enc_output, enc_hidden, enc_c = encoder(inp, 
                                                 state=enc_state, 
                                                 training=training,
@@ -404,8 +391,8 @@ def train_step(inp, targ, mode='main', enc_state=None, training=True,
         dec_states = (enc_hidden, enc_c)
         dec_input = tf.expand_dims([lang.word_index[START_TOK]] * BATCH_SIZE, 1)
         if mask == 1 or mask == 2:
-            enc_mask = create_padding_mask(inputs, 'luong')
-            tag_mask = create_padding_mask(tag_input, 'luong')
+            enc_mask = create_padding_mask(inp, 'luong')
+            tag_mask = create_padding_mask(tag_inp, 'luong') if inc_tags else None
         else:
             enc_mask, tag_mask = None, None
         
@@ -468,7 +455,8 @@ while args.copy:
     for (batch, (inp, targ, tag)) in enumerate(copy_dataset):
         batch_loss, _ = train_step(inp, targ, mode='warm-up', 
                                    tag_inp=tag, 
-                                   inc_tags=inc_tags)
+                                   inc_tags=inc_tags,
+                                   mask=mask_level)
         total_loss += batch_loss
 
         if batch % 100 == 0:
@@ -492,7 +480,8 @@ while args.copy:
                                                 mode='validation',
                                                 training=False, 
                                                 tag_inp=tag, 
-                                                inc_tags=inc_tags)
+                                                inc_tags=inc_tags,
+                                                mask=mask_level)
         val_total_loss += batch_loss
         total_accuracy += batch_accuracy
     
@@ -500,7 +489,7 @@ while args.copy:
         text = lang.sequences_to_texts([input_tensor_train[0]])[0]
         tags = 'COPY'
         text = text.replace(' ', '')
-        output(text[1:-1], 'warmup-' + str(epoch), tags=tags, inc_tags=inc_tags)
+        output(text[1:-1], 'warmup-' + str(epoch), tags=tags, inc_tags=inc_tags, mask=mask_level)
 
     val_total_loss /= (len(X_val) // BATCH_SIZE)
     total_accuracy /= (len(X_val))
@@ -526,8 +515,8 @@ while args.copy:
 # Start main phase training
 logger.info('Main phase')
 loss, val_loss, accuracy = [], [], []
-# reduceLR = ReduceLRonPlateau(optimizer, patience=5, cooldown=10)
-earlyStop = EarlyStopping(patience=5)
+reduceLR = ReduceLRonPlateau(optimizer, patience=5, cooldown=10)
+# earlyStop = EarlyStopping(patience=5)
 
 for epoch in range(EPOCHS):
     start = time.time()
@@ -536,7 +525,8 @@ for epoch in range(EPOCHS):
     for (batch, (inp, targ, tag)) in enumerate(dataset.take(steps_per_epoch_train)):
         batch_loss, _ = train_step(inp, targ, mode='main',
                                 tag_inp=tag, 
-                                inc_tags=inc_tags)
+                                inc_tags=inc_tags,
+                                mask=mask_level)
         total_loss += batch_loss
 
         if batch % 100 == 0:
@@ -550,7 +540,7 @@ for epoch in range(EPOCHS):
         text = lang.sequences_to_texts([input_tensor_train[0]])[0]
         text = text.replace(' ', '')
         tags = lang.sequences_to_texts([tag_tensor_train[0]])[0]
-        output(text[1:-1], 'main-' + str(epoch), tags=tags, inc_tags=inc_tags)
+        output(text[1:-1], 'main-' + str(epoch), tags=tags, inc_tags=inc_tags, mask=mask_level)
     
     loss.append(total_loss / steps_per_epoch_train)
     print('Time taken for 1 epoch {} sec'.format(time.time() - start))
@@ -563,7 +553,8 @@ for epoch in range(EPOCHS):
         batch_loss, batch_accuracy = train_step(inp, targ, mode='validation',
                                                 training=False, 
                                                 tag_inp=tag, 
-                                                inc_tags=inc_tags)
+                                                inc_tags=inc_tags,
+                                                mask=mask_level)
         val_total_loss += batch_loss
         total_accuracy += batch_accuracy
     
@@ -581,14 +572,15 @@ for epoch in range(EPOCHS):
     if len(val_loss) > 1 and val_loss[-1] < val_loss[-2]:
         main_manager['validation'].save()
     
-    # if reduceLR(val_loss[-1]):
-    #     logger.info('Learning rate now {}'.format(callback.get_lr()))
-    if earlyStop(val_loss[-1]):
-        logger.info('Main phase early stopping')
-        break
+    if reduceLR(val_loss[-1]):
+        logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
+    # if earlyStop(val_loss[-1]):
+    #     print('Early stopping callback. Main phase breaking')
+    #     logger.info('Main phase early stopping')
+    #     break
     
     if accuracy[-1] > 0.90:
-        print('Main phase breaking')
+        print('Accuracy exceeded 90%. Main phase breaking')
         logger.info('Main phase finished with accuracy {}'.format(accuracy[-1]))
         main_manager['latest'].save()
         break
@@ -634,7 +626,7 @@ with open(os.path.join(DATA_DIR, 'test.csv'), 'r') as f, \
             break
         line = line.strip()
         tag, word, lemma = line.split('\t')
-        out, inp = evaluate(word, tag, inc_tags=inc_tags)
+        out, inp = evaluate(word, tag, inc_tags=inc_tags, mask=mask_level)
         out = out[:-1]
         if inc_tags:
             word_inp = inp[0][1:-1]
@@ -661,7 +653,7 @@ with open(os.path.join(DATA_DIR, 'train.csv'), 'r') as f, \
             break
         line = line.strip()
         tag, word, lemma = line.split('\t')
-        out, inp = evaluate(word, tag, inc_tags=inc_tags)
+        out, inp = evaluate(word, tag, inc_tags=inc_tags, mask=mask_level)
         out = out[:-1]
         if inc_tags:
             word_inp = inp[0][1:-1]
