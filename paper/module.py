@@ -1,7 +1,7 @@
 import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
 
-class CustomCallback():
+class ReduceLRonPlateau():
     def __init__(self, optimizer, factor=0.1, patience=5, cooldown=10, min_delta=0.0001):
         self.lr = optimizer.lr.numpy()
         self.optimizer = optimizer
@@ -32,6 +32,24 @@ class CustomCallback():
 
     def get_lr(self):
         return self.optimizer.lr.numpy()
+
+class EarlyStopping():
+    def __init__(self, patience=5, min_delta=0.0001):
+        self.patience = patience
+        self.wait = 0   # Patience counter
+        self.min_delta = min_delta
+        self.best = 1e9
+
+    def __call__(self, current):
+        if current - self.min_delta <= self.best:
+            self.best = current
+            self.wait = 0
+        else:
+            self.wait += 1
+            if self.wait >= self.patience:
+                return True
+        
+        return False
 
 class BahdanauAttention(tf.keras.layers.Layer):
     def __init__(self, units):
@@ -79,7 +97,7 @@ class LuongAttention(tf.keras.layers.Layer):
         # score shape == (batch_size, 1, max_len)
         score = tf.matmul(query_with_time_axis, self.W(values), transpose_b=True)
         if mask is not None:
-            score = score + (mask * -1e-9)
+            score = score + (mask * -1e9)
 
         # attention_weights shape == (batch_size, 1, max_len)
         attention_weights = tf.nn.softmax(score, axis=2)
@@ -91,15 +109,18 @@ class LuongAttention(tf.keras.layers.Layer):
         return context_vector, attention_weights
 
 def create_padding_mask(seq, mode='luong'):
-    seq = tf.cast(tf.math.equal(seq, 0), tf.float32)
+    seq = tf.math.equal(seq, 0)
     # add extra dimensions to add the padding
     # to the attention logits.
     if mode == 'transformer':
+        seq = tf.cast(seq, tf.float32)
         return seq[:, tf.newaxis, tf.newaxis, :]  # (batch_size, 1, 1, seq_len)
     elif mode == 'luong':
-        return seq[:, tf.newaxis, :]
+        seq = tf.cast(seq, tf.float32)
+        return seq[:, tf.newaxis, :]  # (batch_size, 1, seq_len)
     elif mode == 'lstm':
-        return tf.cast(seq, tf.bool)
+        seq = tf.math.logical_not(seq)
+        return seq
 
 def scaled_dot_product_attention(q, k, v, mask):
     """Calculate the attention weights.

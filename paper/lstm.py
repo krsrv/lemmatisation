@@ -16,7 +16,7 @@ import string
 import json
 import logging
 
-from module import Encoder, Decoder, TagEncoder, create_padding_mask, CustomCallback
+from module import Encoder, Decoder, TagEncoder, create_padding_mask, ReduceLRonPlateau, EarlyStopping
 from helper import *
 
 parser = argparse.ArgumentParser(description="Train character seq2seq model", 
@@ -55,6 +55,9 @@ parser.add_argument("--exc-tags", dest="exc_tags", required=False,
                     help="Use tags", action='store_true')
 parser.add_argument("--no-copy", dest="copy", required=False,
                     help="Skip copying/warm-up phase", action='store_false')
+parser.add_argument("--mask", dest="mask", required=False,
+                    help="masking level: 0 = no mask, 1 = mask to attention, 2 = mask to attention + LSTM", default=0, 
+                    type=int)
 args = parser.parse_args()
 
 # Create new output directory
@@ -253,7 +256,9 @@ options = {
     'lr': args.lr,
     'dropout': args.dropout,
     'input_dir': DATA_DIR,
-    'output_dir': OUT_DIR
+    'output_dir': OUT_DIR,
+    'warmup': args.copy,
+    'mask': args.mask
 }
 if inc_tags:
     options['max_length_tag'] = max_length_tag
@@ -267,7 +272,7 @@ if inc_tags:
 json.dump(options, open(os.path.join(OUT_DIR, 'options.json'), 'w'))
 print('Files and logs saved to %s' % OUT_DIR)
 
-def evaluate(sentence, tags, attention_output=False, inc_tags=False):
+def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0):
     if attention_output:
         attention_plot = np.zeros((max_length_targ, max_length_inp))
         tag_attention_plot = np.zeros((max_length_targ, max_length_tag))
@@ -279,7 +284,9 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
                                                          maxlen=max_length_inp,
                                                          padding='post')
     inputs = tf.convert_to_tensor(inputs)
-    enc_mask = create_padding_mask(inputs)
+    enc_mask = create_padding_mask(inputs, 'lstm') if mask == 2 else None
+    
+    enc_out, enc_hidden, enc_c = encoder(inputs, training=False, mask=enc_mask)
 
     if inc_tags:
         tags = preprocess_tags(tags)
@@ -296,16 +303,20 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
 
     result = ''
 
-    enc_out, enc_hidden, enc_c = encoder(inputs, training=False)
-
     dec_states = (enc_hidden, enc_c)
     dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
+    if mask == 1 or mask == 2:
+        enc_mask = create_padding_mask(inputs, 'luong')
+        tag_mask = create_padding_mask(tag_input, 'luong')
+    else:
+        enc_mask, tag_mask = None, None
 
     for t in range(max_length_targ):
         predictions, dec_states, attention_weights = decoder(dec_input,
                                                              dec_states,
                                                              enc_out,
                                                              tag_vecs=tag_output,
+                                                             enc_mask=enc_mask, tag_mask=tag_mask,
                                                              training=False)
         
         if attention_output:
@@ -376,7 +387,11 @@ def train_step(inp, targ, mode='main', enc_state=None, training=True,
     count = [True for _ in range(BATCH_SIZE)]
 
     with tf.GradientTape() as tape:
-        enc_output, enc_hidden, enc_c = encoder(inp, state=enc_state, training=training)
+        enc_mask = create_padding_mask(inputs, 'lstm') if mask == 2 else None
+        enc_output, enc_hidden, enc_c = encoder(inp, 
+                                                state=enc_state, 
+                                                training=training,
+                                                mask=enc_mask)
 
         tag_output, tag_mask = None, None
         if inc_tags:
@@ -384,16 +399,22 @@ def train_step(inp, targ, mode='main', enc_state=None, training=True,
             tag_output = tag_encoder(tag_inp, training=True, mask=tag_mask)
             
             # Different mask needed for non-transformer architecture
-            tag_mask = None
+            tag_mask = create_padding_mask(tag_inp, 'luong')
         
         dec_states = (enc_hidden, enc_c)
         dec_input = tf.expand_dims([lang.word_index[START_TOK]] * BATCH_SIZE, 1)
+        if mask == 1 or mask == 2:
+            enc_mask = create_padding_mask(inputs, 'luong')
+            tag_mask = create_padding_mask(tag_input, 'luong')
+        else:
+            enc_mask, tag_mask = None, None
         
         # Teacher forcing - feeding the target as the next input
         for t in range(1, targ.shape[1]):
             # passing enc_output to the decoder
             predictions, dec_states, _ = decoder(dec_input, dec_states, enc_output,
                                                 tag_vecs=tag_output,
+                                                enc_mask=enc_mask, tag_mask=tag_mask,
                                                 training=training)
 
             loss += loss_function(targ[:, t], predictions)
@@ -505,7 +526,8 @@ while args.copy:
 # Start main phase training
 logger.info('Main phase')
 loss, val_loss, accuracy = [], [], []
-callback = CustomCallback(optimizer, patience=5, cooldown=10)
+# reduceLR = ReduceLRonPlateau(optimizer, patience=5, cooldown=10)
+earlyStop = EarlyStopping(patience=5)
 
 for epoch in range(EPOCHS):
     start = time.time()
@@ -559,8 +581,11 @@ for epoch in range(EPOCHS):
     if len(val_loss) > 1 and val_loss[-1] < val_loss[-2]:
         main_manager['validation'].save()
     
-    if callback(val_loss[-1]):
-        logger.info('Learning rate now {}'.format(callback.get_lr()))
+    # if reduceLR(val_loss[-1]):
+    #     logger.info('Learning rate now {}'.format(callback.get_lr()))
+    if earlyStop(val_loss[-1]):
+        logger.info('Main phase early stopping')
+        break
     
     if accuracy[-1] > 0.90:
         print('Main phase breaking')
