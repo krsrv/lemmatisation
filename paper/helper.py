@@ -34,6 +34,8 @@ def preprocess_sentence(w, clip_length=None):
 # 1. Remove the accents
 # 2. Clean the sentences
 # 3. Return word pairs in the format: [Tag, Word, Lemma]
+# Note: SIGMORPHON 2019 Task 2 has data in the form Lemma, Word, Tag
+# Here we use files with the format Tag, Word, Lemma
 def create_dataset(path, num_examples=None, clip_length=None):
     lines = io.open(path, encoding='UTF-8').read().strip().split('\n')
     word_pairs = []
@@ -181,12 +183,12 @@ def plot_attention(attention, sentence, predicted_sentence, fname=None):
     
     ax.xaxis.set_label_text('Input')
     ax.yaxis.set_label_text('Output')
-    ax.set_xticklabels([''] + xticks, fontproperties=prop, fontdict=fontdict)
-    ax.set_yticklabels([''] + yticks, fontproperties=prop, fontdict=fontdict)
+    ax.set_xticklabels([''] + sentence, fontproperties=prop, fontdict=fontdict)
+    ax.set_yticklabels([''] + predicted_sentence, fontproperties=prop, fontdict=fontdict)
     ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
     ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
     
-    fig.savefig('katak.png', bbox_inches='tight')
+    fig.savefig(fname, bbox_inches='tight')
     plt.close(fig)  
 
 def get_number_training_vars(module):

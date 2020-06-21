@@ -260,12 +260,8 @@ class SingleHeadTransformerEncoderLayer(tf.keras.layers.Layer):
     def __init__(self, d_model, rate=0.2):
         super(SingleHeadTransformerEncoderLayer, self).__init__()
         self.mha = MultiHeadAttention(d_model, 1)
-
         self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
-        self.layernorm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
-
         self.dropout1 = tf.keras.layers.Dropout(rate)
-        self.dropout2 = tf.keras.layers.Dropout(rate)
 
     def call(self, x, training, mask):
         attn_output, _ = self.mha(x, x, x, mask)  # (batch_size, input_seq_len, d_model)
@@ -338,7 +334,7 @@ class Decoder(tf.keras.Model):
         if self.inc_tags:
             assert tag_vecs is not None
 
-            s_prev, _ = state
+            s_prev, state_c = state
             # Attend over tag vectors
             tag_context_vector, tag_attention_weights = self.tag_attention(s_prev, tag_vecs, tag_mask)
             
