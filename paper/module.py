@@ -110,7 +110,10 @@ class LuongAttention(tf.keras.layers.Layer):
 class StructuralLuongAttention(tf.keras.layers.Layer):
     def __init__(self, units):
         super(StructuralLuongAttention, self).__init__()
-        self.W = tf.keras.layers.Dense(units)
+        self.v = tf.keras.layers.Dense(1)
+
+        self.W_h = tf.keras.layers.Dense(units)
+        self.W_v = tf.keras.layers.Dense(units)
         
         # Positional bias
         self.W_p = tf.keras.layers.Dense(units)
@@ -126,7 +129,6 @@ class StructuralLuongAttention(tf.keras.layers.Layer):
 
     def call(self, query, values, mask):
         # query hidden state shape == (batch_size, hidden size)
-        # query_with_time_axis shape == (batch_size, 1, hidden size)
         # values shape == (batch_size, max_len, hidden size)
         # mask shape == (batch_size, 1, max_len)
         max_len = mask.shape[2]
@@ -134,6 +136,7 @@ class StructuralLuongAttention(tf.keras.layers.Layer):
             self.previous_scores = tf.zeros(mask.shape)
 
         # we are doing this to broadcast addition along the time axis to calculate the score
+        # query_with_time_axis shape == (batch_size, 1, hidden size)
         query_with_time_axis = tf.expand_dims(query, 1)
 
         # input_lengths shape == (batch_size, max_len, 1)
@@ -157,21 +160,21 @@ class StructuralLuongAttention(tf.keras.layers.Layer):
         markov = tf.pad(self.previous_scores, tf.constant([[0, 0], [0, 0], [2, 2]])) # (batch_size, 1, max_len+4)
         markov = tf.stack([markov[:, 0, i:i+5] for i in range(max_len)], axis=1)
 
-        summand = self.W(values) + self.W_p(positional) + self.W_m(markov)
-        # score shape == (batch_size, 1, max_len)
-        score = tf.matmul(query_with_time_axis, summand, transpose_b=True)
-        if mask is not None:
-            score = score + (mask * -1e9)
+        summand = self.W_h(query_with_time_axis) + self.W_v(values) + \
+                  self.W_p(positional) + self.W_m(markov)
+        # score shape == (batch_size, max_len, 1)
+        score = self.v(tf.math.tanh(summand))
+        score = score + (mask[:,0,:,tf.newaxis] * -1e9)
 
-        # attention_weights shape == (batch_size, 1, max_len)
-        attention_weights = tf.nn.softmax(score, axis=2)
+        # attention_weights shape == (batch_size, max_len, 1)
+        attention_weights = tf.nn.softmax(score, axis=1)
 
         # context_vector shape after sum == (batch_size, value_size)
-        context_vector = tf.matmul(attention_weights, values)
+        context_vector = attention_weights * values
         context_vector = tf.reduce_sum(context_vector, axis=1)
 
         self.timestep += 1
-        self.previous_scores = attention_weights
+        self.previous_scores = attention_weights[:, tf.newaxis, :, 0]
 
         return context_vector, attention_weights
 
