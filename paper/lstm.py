@@ -295,6 +295,7 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0):
     else:
         enc_mask, tag_mask = None, None
 
+    decoder.reset()
     for t in range(max_length_targ):
         predictions, dec_states, attention_weights = decoder(dec_input,
                                                              dec_states,
@@ -396,7 +397,7 @@ def train_step(inp, targ, mode='main', enc_state=None, training=True,
         else:
             enc_mask, tag_mask = None, None
         
-        # Teacher forcing - feeding the target as the next input
+        decoder.reset()
         for t in range(1, targ.shape[1]):
             # passing enc_output to the decoder
             predictions, dec_states, _ = decoder(dec_input, dec_states, enc_output,

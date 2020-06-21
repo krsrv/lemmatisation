@@ -83,7 +83,6 @@ class BahdanauAttention(tf.keras.layers.Layer):
 class LuongAttention(tf.keras.layers.Layer):
     def __init__(self, units):
         super(LuongAttention, self).__init__()
-        # self.W = tf.keras.layers.Dense(units)
         self.W = tf.keras.layers.Dense(units)
 
     def call(self, query, values, mask=None):
@@ -105,6 +104,74 @@ class LuongAttention(tf.keras.layers.Layer):
         # context_vector shape after sum == (batch_size, value_size)
         context_vector = tf.matmul(attention_weights, values)
         context_vector = tf.reduce_sum(context_vector, axis=1)
+
+        return context_vector, attention_weights
+
+class StructuralLuongAttention(tf.keras.layers.Layer):
+    def __init__(self, units):
+        super(StructuralLuongAttention, self).__init__()
+        self.W = tf.keras.layers.Dense(units)
+        
+        # Positional bias
+        self.W_p = tf.keras.layers.Dense(units)
+        self.timestep = 1
+
+        # Markov assumption
+        self.W_m = tf.keras.layers.Dense(units)
+        self.previous_scores = None
+
+    def reset(self):
+        self.timestep = 1
+        self.previous_scores = None
+
+    def call(self, query, values, mask):
+        # query hidden state shape == (batch_size, hidden size)
+        # query_with_time_axis shape == (batch_size, 1, hidden size)
+        # values shape == (batch_size, max_len, hidden size)
+        # mask shape == (batch_size, 1, max_len)
+        max_len = mask.shape[2]
+        if self.timestep == 1:
+            self.previous_scores = tf.zeros(mask.shape)
+
+        # we are doing this to broadcast addition along the time axis to calculate the score
+        query_with_time_axis = tf.expand_dims(query, 1)
+
+        # input_lengths shape == (batch_size, max_len, 1)
+        input_lengths = tf.cast(tf.math.equal(mask, 0), tf.float32) # (batch_size, 1, max_len)
+        input_lengths = 1. + tf.reduce_sum(input_lengths, axis=-1) # (batch_size, 1)
+        input_lengths = tf.tile(input_lengths, tf.constant([1, max_len])) # (batch_size, max_len)
+        input_lengths = input_lengths[:, :, tf.newaxis]
+
+        # positional shape == (batch_size, max_len, 2)
+        positional = tf.convert_to_tensor([1 + self.timestep for _ in range(max_len)]) # (max_len,)
+        positional = tf.stack([positional, 2 + tf.range(max_len)]) # (2, max_len)
+        positional = tf.cast(tf.transpose(positional), tf.float32) # (max_len, 2)
+        positional = positional[tf.newaxis, :, :]
+        positional = tf.tile(positional, tf.constant([mask.shape[0], 1, 1]))
+
+        # positional shape == (batch_size, max_len, 3)
+        positional = tf.concat([positional, input_lengths], axis=-1)
+        positional = tf.math.log(positional)
+
+        # markov shape == (batch_size, max_len, 5)
+        markov = tf.pad(self.previous_scores, tf.constant([[0, 0], [0, 0], [2, 2]])) # (batch_size, 1, max_len+4)
+        markov = tf.stack([markov[:, 0, i:i+5] for i in range(max_len)], axis=1)
+
+        summand = self.W(values) + self.W_p(positional) + self.W_m(markov)
+        # score shape == (batch_size, 1, max_len)
+        score = tf.matmul(query_with_time_axis, summand, transpose_b=True)
+        if mask is not None:
+            score = score + (mask * -1e9)
+
+        # attention_weights shape == (batch_size, 1, max_len)
+        attention_weights = tf.nn.softmax(score, axis=2)
+
+        # context_vector shape after sum == (batch_size, value_size)
+        context_vector = tf.matmul(attention_weights, values)
+        context_vector = tf.reduce_sum(context_vector, axis=1)
+
+        self.timestep += 1
+        self.previous_scores = attention_weights
 
         return context_vector, attention_weights
 
@@ -316,14 +383,17 @@ class Decoder(tf.keras.Model):
         if inc_tags:
             # used for attention
             self.tag_attention = LuongAttention(self.dec_units)
-            self.enc_attention = LuongAttention(self.dec_units)
+            self.enc_attention = StructuralLuongAttention(self.dec_units)
         else:
-            self.enc_attention = LuongAttention(self.dec_units)
+            self.enc_attention = StructuralLuongAttention(self.dec_units)
 
         self.W_c = tf.keras.layers.Dense(units, use_bias=False)
 
         self.dropout1 = tf.keras.layers.Dropout(rate)
         self.dropout2 = tf.keras.layers.Dropout(rate)
+
+    def reset(self):
+        self.enc_attention.reset()
 
     def call(self, x, state, enc_output, tag_vecs=None, 
              enc_mask=None, tag_mask=None, training=True):
