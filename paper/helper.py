@@ -20,7 +20,7 @@ def preprocess_sentence(w, clip_length=None):
     w = re.sub(r'[" "]+', " ", w)
 
     # replacing everything with space except (ऀ-ॏ, ०-९ ".", "-")
-    w = re.sub(r'[^\u0900-\u094f\u0958-\u096f?,.-]+', "", w)
+    # w = re.sub(r'[^\u0900-\u094f\u0958-\u096f?,.-]+', "", w)
     
     if clip_length:
         w = w[-clip_length:]
@@ -120,7 +120,10 @@ def load_dataset(path, num_examples=None, clip_length=None, tokenizer=None):
 
     tags, inp_lang, targ_lang = create_dataset(path, num_examples, clip_length)
     if tokenizer is not None:
-        lang_tokenizer, tag_tokenizer = tokenizer
+        if len(tokenizer) == 2:
+            lang_tokenizer, tag_tokenizer = tokenizer
+        else:
+            lang_tokenizer = tokenizer
     
     # since we are working on the same language, the same char set
     # works for both input and target language
@@ -134,15 +137,15 @@ def load_dataset(path, num_examples=None, clip_length=None, tokenizer=None):
 
     return (input_tensor, target_tensor, tag_tensor), (lang_tokenizer, tag_tokenizer)
 
-def save_tokeniser(tokeniser, file_path):
+def save_tokenizer(tokenizer, file_path):
     with open(file_path, 'wb') as handle:
-        pickle.dump(tokeniser, handle)
+        pickle.dump(tokenizer, handle)
 
-def load_tokeniser(file_path):
-    tokeniser = None
+def load_tokenizer(file_path):
+    tokenizer = None
     with open(file_path, 'rb') as handle:
-        tokeniser = pickle.load(handle)
-    return tokeniser
+        tokenizer = pickle.load(handle)
+    return tokenizer
 
 def pad(x, y, concatenate=True):
     # Pad x and y (2D tensors) so that they are the same sequence length

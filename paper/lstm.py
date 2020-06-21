@@ -146,9 +146,9 @@ if inc_tags:
     logger.debug('Tag size %d' % (vocab_tag_size))
 
 ## Save tokenizers
-save_tokeniser(lang, os.path.join(OUT_DIR, 'tokenizer'))
+save_tokenizer(lang, os.path.join(OUT_DIR, 'tokenizer'))
 if inc_tags:
-    save_tokeniser(tag_tokenizer, os.path.join(OUT_DIR, 'tag_tokenizer'))
+    save_tokenizer(tag_tokenizer, os.path.join(OUT_DIR, 'tag_tokenizer'))
 
 # Create datasets
 # Create dataset for the warm-up phase
@@ -539,7 +539,7 @@ for epoch in range(EPOCHS):
     if epoch % 10 == 0:
         text = lang.sequences_to_texts([input_tensor_train[0]])[0]
         text = text.replace(' ', '')
-        tags = lang.sequences_to_texts([tag_tensor_train[0]])[0]
+        tags = tag_tokenizer.sequences_to_texts([tag_tensor_train[0]])[0]
         output(text[1:-1], 'main-' + str(epoch), tags=tags, inc_tags=inc_tags, mask=mask_level)
     
     loss.append(total_loss / steps_per_epoch_train)

@@ -52,15 +52,23 @@ EPOCHS = options['epochs'] \
 BATCH_SIZE = options['batch_size'] \
     if 'batch_size' in options.keys() else 10
 embedding_dim = options['embedding']
-units = options['units']
+dropout = options['dropout'] \
+    if 'dropout' in options.keys() else 0.2
+mask_level = options['mask'] \
+    if 'mask' in options.keys() else 0
 
+units = options['units']
 num_samples = options['num_samples']
 
 # Load tokenizer
 lang = pickle.load(open(os.path.join(args.dir, 'tokenizer'), 'rb'))
 if inc_tags:
     tag_tokenizer = pickle.load(open(os.path.join(args.dir, 'tag_tokenizer'), 'rb'))
+    tokenizer = (lang, tag_tokenizer)
+else:
+    tokenizer = lang
 
+# Load vocabulary and sequence length settings
 max_length_targ = options['max_length_targ'] \
     if 'max_length_targ' in options.keys() else 15
 max_length_inp = options['max_length_inp'] \
@@ -74,6 +82,7 @@ vocab_tar_size = len(lang.word_index)+2
 if inc_tags:
     vocab_tag_size = len(tag_tokenizer.word_index)+2
 
+# Load checkpoint directory
 if args.ckpt_dir:
     assert os.path.exists(os.path.join(args.dir, args.ckpt_dir))
     ckpt_dir = os.path.join(args.dir, args.ckpt_dir)
@@ -89,27 +98,27 @@ elif not args.use_weights:
     elif os.path.exists(os.path.join(args.dir, 'copy_ckpt')):
         ckpt_dir = os.path.join(args.dir, 'copy_ckpt')
 
-def _create_dataset(path, return_tf_dataset=False):
-    lines = io.open(path, encoding='UTF-8').read().strip().split('\n')
-    word_pairs = [[preprocess_sentence(w, clip_length) for w in l.split()[1:]]  
-        for l in lines[:num_examples]]
+# Helper function to create dataset from filepath
+def _create_dataset(path, tokenizer=None, return_tf_dataset=False):
+    if tokenizer is None:
+        tokenizer = create_tokenizer(path)
+    tensor, _ = load_dataset(path, tokenizer=tokenizer)
 
-    inp_lang, targ_lang = zip(*word_pairs)
-    input_tensor, _ = tokenize(inp_lang, lang_tokenizer)
-    target_tensor, _ = tokenize(targ_lang, lang_tokenizer)
-
-    input_tensor_train, input_tensor_val, target_tensor_train, target_tensor_val = \
-        train_test_split(input_tensor, target_tensor, test_size=0.2)
+    input_tensor_train, input_tensor_val, target_tensor_train, \
+        target_tensor_val, tag_tensor_train, tag_tensor_val = \
+        train_test_split(tensor[0], tensor[1], tensor[2], test_size=0.2)
     
     if return_tf_dataset:
         dataset = tf.data.Dataset.from_tensor_slices(
-            (input_tensor_train, target_tensor_train)).shuffle(len(input_tensor_train))
+            (input_tensor_train, target_tensor_train, tag_tensor_train))
+        dataset = dataset.shuffle(len(input_tensor_train))
         dataset = dataset.batch(BATCH_SIZE, drop_remainder=True)
         return dataset
 
-    return input_tensor_train, input_tensor_val, target_tensor_train, target_tensor_val
+    return (input_tensor_train, target_tensor_train, tag_tensor_train), \
+        (input_tensor_val, target_tensor_val, tag_tensor_val)
 
-def evaluate(sentence, tags, attention_output=False, inc_tags=False):
+def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0):
     if attention_output:
         attention_plot = np.zeros((max_length_targ, max_length_inp))
         tag_attention_plot = np.zeros((max_length_targ, max_length_tag))
@@ -121,7 +130,9 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
                                                          maxlen=max_length_inp,
                                                          padding='post')
     inputs = tf.convert_to_tensor(inputs)
-    enc_mask = create_padding_mask(inputs)
+    enc_mask = create_padding_mask(inputs, 'lstm') if mask == 2 else None
+    
+    enc_out, enc_hidden, enc_c = encoder(inputs, training=False, mask=enc_mask)
 
     if inc_tags:
         tags = preprocess_tags(tags)
@@ -138,17 +149,20 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False):
 
     result = ''
 
-    enc_state = encoder.initial_state(1)
-    enc_out, enc_hidden, enc_c = encoder(inputs, enc_state, training=False)
-
     dec_states = (enc_hidden, enc_c)
     dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
+    if mask == 1 or mask == 2:
+        enc_mask = create_padding_mask(inputs, 'luong')
+        tag_mask = create_padding_mask(tag_input, 'luong') if inc_tags else None
+    else:
+        enc_mask, tag_mask = None, None
 
     for t in range(max_length_targ):
         predictions, dec_states, attention_weights = decoder(dec_input,
                                                              dec_states,
                                                              enc_out,
                                                              tag_vecs=tag_output,
+                                                             enc_mask=enc_mask, tag_mask=tag_mask,
                                                              training=False)
         
         if attention_output:
@@ -245,7 +259,7 @@ if os.path.exists(args.test_file):
                 break
             line = line.strip()
             tag, word, lemma = line.split('\t')
-            out, inp = evaluate(word, tag, inc_tags=inc_tags)
+            out, inp = evaluate(word, tag, inc_tags=inc_tags, mask=mask_level)
             out = out[:-1]
             if inc_tags:
                 word_inp = inp[0][1:-1]
