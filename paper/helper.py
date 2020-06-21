@@ -170,28 +170,24 @@ def convert(lang, tensor):
 # function for plotting the attention weights
 def plot_attention(attention, sentence, predicted_sentence, fname=None):
     fig = plt.figure(figsize=(10,10))
-    
+        
     ax = fig.add_subplot(1, 1, 1)
     ax.matshow(attention, cmap='viridis')
-    
     prop = FontProperties(fname='Nirmala.ttf')
-    # fontdict = {'fontsize': 16}
-    # ax.tick_params(labelsize=16)
+    
+    fontdict = {'fontsize': 14, 'color': 'darkred'}
+    sentence = [x + ' ' for x in sentence]
+    predicted_sentence = [x + ' ' for x in predicted_sentence]
     
     ax.xaxis.set_label_text('Input')
     ax.yaxis.set_label_text('Output')
-    
-    ax.set_xticklabels([''] + sentence, fontproperties=prop, rotation=90)
-    ax.set_yticklabels([''] + predicted_sentence, fontproperties=prop)
+    ax.set_xticklabels([''] + xticks, fontproperties=prop, fontdict=fontdict)
+    ax.set_yticklabels([''] + yticks, fontproperties=prop, fontdict=fontdict)
     ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
     ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
-
-    if fname:
-        fig.savefig(fname, bbox_inches='tight')
-    else:
-        plt.show()
-
-    plt.close(fig)
+    
+    fig.savefig('katak.png', bbox_inches='tight')
+    plt.close(fig)  
 
 def get_number_training_vars(module):
     return np.sum([np.prod(v.get_shape().as_list()) for v in module.trainable_variables])
