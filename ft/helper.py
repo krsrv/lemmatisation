@@ -100,6 +100,10 @@ def tag_tokenize(tags, tag_tokenizer=None):
 
     return tensor, tag_tokenizer
 
+def load_ptv(path, num_examples=None):
+    array = np.loadtxt(path, usecols=range(1,301), dtype=np.float32)
+    return array[:num_examples]
+
 # Load dataset
 #    If inc_tags, both language and tag tokenizer will be returned. In case tokenizer is
 # supplied, both language and tag tokenizer should be given as a single tuple
