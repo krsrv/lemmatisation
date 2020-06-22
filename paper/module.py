@@ -142,10 +142,10 @@ class StructuralLuongAttention(tf.keras.layers.Layer):
         query_with_time_axis = tf.expand_dims(query, 1)
 
         # input_lengths shape == (batch_size, max_len, 1)
-        # input_lengths = tf.cast(tf.math.equal(mask, 0), tf.float32) # (batch_size, max_len, 1)
-        # input_lengths = 1. + tf.reduce_sum(input_lengths, axis=1) # (batch_size, 1)
-        # input_lengths = tf.tile(input_lengths, tf.constant([1, max_len])) # (batch_size, max_len)
-        # input_lengths = tf.expand_dims(input_lengths, 2)
+        input_lengths = tf.cast(tf.math.equal(mask, 0), tf.float32) # (batch_size, max_len, 1)
+        input_lengths = 1. + tf.reduce_sum(input_lengths, axis=1) # (batch_size, 1)
+        input_lengths = tf.tile(input_lengths, tf.constant([1, max_len])) # (batch_size, max_len)
+        input_lengths = tf.expand_dims(input_lengths, 2)
 
         # positional shape == (batch_size, max_len, 2)
         positional = tf.convert_to_tensor([1 + self.timestep for _ in range(max_len)]) # (max_len,)
@@ -155,7 +155,7 @@ class StructuralLuongAttention(tf.keras.layers.Layer):
         positional = tf.tile(positional, tf.constant([mask.shape[0], 1, 1]))
 
         # positional shape == (batch_size, max_len, 3)
-        # positional = tf.concat([positional, input_lengths], axis=-1)
+        positional = tf.concat([positional, input_lengths], axis=-1)
         positional = tf.math.log(positional)
 
         # markov shape == (batch_size, max_len, 5)
