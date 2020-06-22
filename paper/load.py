@@ -152,7 +152,7 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0):
     dec_states = (enc_hidden, enc_c)
     dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
     if mask == 1 or mask == 2:
-        enc_mask = create_padding_mask(inputs, 'luong')
+        enc_mask = create_padding_mask(inputs, 'structure')
         tag_mask = create_padding_mask(tag_input, 'luong') if inc_tags else None
     else:
         enc_mask, tag_mask = None, None

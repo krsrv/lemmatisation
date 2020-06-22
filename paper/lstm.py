@@ -290,7 +290,7 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0):
     dec_states = (enc_hidden, enc_c)
     dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
     if mask == 1 or mask == 2:
-        enc_mask = create_padding_mask(inputs, 'luong')
+        enc_mask = create_padding_mask(inputs, 'structure')
         tag_mask = create_padding_mask(tag_input, 'luong') if inc_tags else None
     else:
         enc_mask, tag_mask = None, None
@@ -392,7 +392,7 @@ def train_step(inp, targ, mode='main', enc_state=None, training=True,
         dec_states = (enc_hidden, enc_c)
         dec_input = tf.expand_dims([lang.word_index[START_TOK]] * BATCH_SIZE, 1)
         if mask == 1 or mask == 2:
-            enc_mask = create_padding_mask(inp, 'luong')
+            enc_mask = create_padding_mask(inp, 'structure')
             tag_mask = create_padding_mask(tag_inp, 'luong') if inc_tags else None
         else:
             enc_mask, tag_mask = None, None
@@ -487,9 +487,9 @@ while args.copy:
         total_accuracy += batch_accuracy
     
     if epoch % 5 == 0:
-        text = lang.sequences_to_texts([input_tensor_train[0]])[0]
-        tags = 'COPY'
+        text = lang.sequences_to_texts([input_tensor_val[0]])[0]
         text = text.replace(' ', '')
+        tags = 'COPY'
         output(text[1:-1], 'warmup-' + str(epoch), tags=tags, inc_tags=inc_tags, mask=mask_level)
 
     val_total_loss /= (len(X_val) // BATCH_SIZE)
@@ -538,9 +538,9 @@ for epoch in range(EPOCHS):
     # Update checkpoint step variable and save
     checkpoint.step.assign_add(1)
     if epoch % 10 == 0:
-        text = lang.sequences_to_texts([input_tensor_train[0]])[0]
+        text = lang.sequences_to_texts([input_tensor_val[0]])[0]
         text = text.replace(' ', '')
-        tags = tag_tokenizer.sequences_to_texts([tag_tensor_train[0]])[0]
+        tags = tag_tokenizer.sequences_to_texts([tag_tensor_val[0]])[0]
         output(text[1:-1], 'main-' + str(epoch), tags=tags, inc_tags=inc_tags, mask=mask_level)
     
     loss.append(total_loss / steps_per_epoch_train)
@@ -580,7 +580,7 @@ for epoch in range(EPOCHS):
     #     logger.info('Main phase early stopping')
     #     break
     
-    if accuracy[-1] > 0.90:
+    if accuracy[-1] > 0.90 and False:
         print('Accuracy exceeded 90%. Main phase breaking')
         logger.info('Main phase finished with accuracy {}'.format(accuracy[-1]))
         main_manager['latest'].save()
