@@ -100,8 +100,8 @@ def tag_tokenize(tags, tag_tokenizer=None):
 
     return tensor, tag_tokenizer
 
-def load_ptv(path, num_examples=None):
-    array = np.loadtxt(path, usecols=range(1,301), dtype=np.float32)
+def load_ptv(path, dim=None, num_examples=None):
+    array = np.loadtxt(path, dtype=np.float32)
     return array[:num_examples]
 
 # Load dataset

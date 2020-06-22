@@ -48,6 +48,9 @@ parser.add_argument("--clip-length", dest="clip_length", required=False,
 parser.add_argument("--out-dir", dest="out_dir", required=False,
                     help="Output directory", default='../att_model',
                     type=str)
+parser.add_argument("--ptv-dim", dest="ptv_dim", required=False,
+                    help="Dimensions for pretrained embeddings. 0 disables using embeddings",
+                    default=0, type=int)
 parser.add_argument("--inp-dir", dest="inp_dir", required=False,
                     help="Input directory", default='../data',
                     type=str)
@@ -85,11 +88,25 @@ num_samples = args.num_samples
 clip_length = args.clip_length
 input_file = os.path.join(DATA_DIR, 'train.csv')
 dev_file = os.path.join(DATA_DIR, 'dev.csv')
+
 inc_tags = not args.exc_tags
 mask_level = args.mask
+use_ptv = (args.ptv_dim > 0)
+
+if use_ptv:
+    ptv_dim = args.ptv_dim
+    ptv_train_file = os.path.join(DATA_DIR, 'ptv-train-%d.npy' % (ptv_dim))
 
 # Load data from files to variables
 if os.path.exists(dev_file):
+    if use_ptv:
+        # Check whether dev instance for pre-trained embeddings exists
+        ptv_dev_file = os.path.join(DATA_DIR, 'ptv-dev-%d.npy' % (ptv_dim))
+        assert os.path.exists(ptv_dev_file)
+
+        ptv_tensor_train = load_ptv(ptv_train_file, ptv_dim, num_samples)
+        ptv_tensor_val = load_ptv(ptv_dev_file, ptv_dim, num_samples)
+
     tokenizer = create_tokenizer(input_file, dev_file)
     tensor, tokenizer = load_dataset(
         input_file, num_samples, clip_length, tokenizer=tokenizer)
@@ -108,10 +125,18 @@ else:
         input_file, num_samples, clip_length, tokenizer=tokenizer)
 
     input_tensor, target_tensor, tag_tensor = tensor[0], tensor[1], tensor[2]
-    # Creating training and validation sets using an 80-20 split
-    input_tensor_train, input_tensor_val, target_tensor_train, \
-        target_tensor_val, tag_tensor_train, tag_tensor_val = \
-        train_test_split(input_tensor, target_tensor, tag_tensor, test_size=0.2)
+
+    if use_ptv:
+        ptv_tensor = load_ptv(ptv_train_file, ptv_dim, num_samples)
+        input_tensor_train, input_tensor_val, target_tensor_train, \
+            target_tensor_val, tag_tensor_train, tag_tensor_val, \
+            ptv_tensor_train, ptv_tensor_val = \
+            train_test_split(input_tensor, target_tensor, tag_tensor, ptv_tensor, test_size=0.2)
+    else:
+        # Creating training and validation sets using an 80-20 split
+        input_tensor_train, input_tensor_val, target_tensor_train, \
+            target_tensor_val, tag_tensor_train, tag_tensor_val = \
+            train_test_split(input_tensor, target_tensor, tag_tensor, test_size=0.2)
     
 max_length_targ = max(target_tensor_val.shape[1], target_tensor_train.shape[1])
 max_length_inp =  max(input_tensor_train.shape[1], input_tensor_val.shape[1])
@@ -132,8 +157,10 @@ BUFFER_SIZE = len(input_tensor_train)
 BATCH_SIZE = args.batch_size
 steps_per_epoch_train = len(input_tensor_train)//BATCH_SIZE
 steps_per_epoch_val = len(input_tensor_val)//BATCH_SIZE
+
 embedding_dim = args.embed_dim
 units = args.latent_dim
+
 vocab_inp_size = len(lang.word_index)+2
 vocab_tar_size = len(lang.word_index)+2
 vocab_tag_size = len(tag_tokenizer.word_index)+2
@@ -144,6 +171,8 @@ logger.debug('Batch size %d' % BATCH_SIZE)
 logger.debug('Vocabulary size %d' % (vocab_inp_size))
 if inc_tags:
     logger.debug('Tag size %d' % (vocab_tag_size))
+if use_ptv:
+    logger.debug('Pretrained embedding dimension %d' % (ptv_dim))
 
 ## Save tokenizers
 save_tokenizer(lang, os.path.join(OUT_DIR, 'tokenizer'))
@@ -165,24 +194,44 @@ copy_tag_tensor_val = np.repeat(copy_tag_tensor, input_tensor_val.shape[0], axis
 X_train = pad(input_tensor_train, target_tensor_train, concatenate=True)
 Y_train = X_train[:, :]
 T_train = pad(copy_tag_tensor_train, tag_tensor_train)
+if use_ptv:
+    ptv_zero = np.zeros(ptv_tensor_train.shape, dtype=np.float32)
+    V_train = np.concatenate([ptv_zero, ptv_tensor_train], axis=0)
 
 X_val = pad(input_tensor_val, target_tensor_val, concatenate=True)
 Y_val = X_val[:, :]
 T_val = pad(copy_tag_tensor_val, tag_tensor_val)
+if use_ptv:
+    ptv_zero = np.zeros(ptv_tensor_val.shape, dtype=np.float32)
+    V_val = np.concatenate([ptv_zero, ptv_tensor_val], axis=0)
+
+if use_ptv:
+    copy_dataset = (X_train, Y_train, T_train, V_train)
+    copy_val_dataset = (X_val, Y_val, T_val, V_val)
+else:
+    copy_dataset = (X_train, Y_train, T_train)
+    copy_val_dataset = (X_val, Y_val, T_val)
 
 copy_dataset = tf.data.Dataset.from_tensor_slices(
-    (X_train, Y_train, T_train)).shuffle(2*BUFFER_SIZE)
+    copy_dataset).shuffle(2*BUFFER_SIZE)
 copy_val_dataset = tf.data.Dataset.from_tensor_slices(
-    (X_val, Y_val, T_val)).shuffle(2*BUFFER_SIZE)
+    copy_val_dataset).shuffle(2*BUFFER_SIZE)
 
 copy_dataset = copy_dataset.batch(BATCH_SIZE, drop_remainder=True)
 copy_val_dataset = copy_val_dataset.batch(BATCH_SIZE, drop_remainder=True)
 
 # Create dataset for the main phase
+if use_ptv:
+    dataset = (input_tensor_train, target_tensor_train, tag_tensor_train, ptv_tensor_train)
+    val_dataset = (input_tensor_val, target_tensor_val, tag_tensor_val, ptv_tensor_val)
+else:
+    dataset = (input_tensor_train, target_tensor_train, tag_tensor_train)
+    val_dataset = (input_tensor_val, target_tensor_val, tag_tensor_val)
+
 dataset = tf.data.Dataset.from_tensor_slices(
-    (input_tensor_train, target_tensor_train, tag_tensor_train)).shuffle(BUFFER_SIZE)
+    dataset).shuffle(BUFFER_SIZE)
 val_dataset = tf.data.Dataset.from_tensor_slices(
-    (input_tensor_val, target_tensor_val, tag_tensor_val)).shuffle(BUFFER_SIZE)
+    val_dataset).shuffle(BUFFER_SIZE)
 
 dataset = dataset.batch(BATCH_SIZE, drop_remainder=True)
 val_dataset = val_dataset.batch(BATCH_SIZE, drop_remainder=True)
@@ -196,7 +245,7 @@ if inc_tags:
                          rate=args.dropout)
 
 decoder = Decoder(vocab_tar_size, embedding_dim, units, 
-                  inc_tags=inc_tags, rate=args.dropout)
+                  inc_tags=inc_tags, rate=args.dropout, use_ptv=use_ptv)
 
 optimizer = tf.keras.optimizers.Adam(args.lr)
 loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
@@ -242,7 +291,8 @@ options = {
     'input_dir': DATA_DIR,
     'output_dir': OUT_DIR,
     'warmup': args.copy,
-    'mask': mask_level
+    'mask': mask_level,
+    'use_ptv': use_ptv
 }
 if inc_tags:
     options['max_length_tag'] = max_length_tag
@@ -252,11 +302,13 @@ if inc_tags:
         'num_heads': 1,
         'dff': 256,
     }
+if use_ptv:
+    options['ptv_dim'] = ptv_dim
 
 json.dump(options, open(os.path.join(OUT_DIR, 'options.json'), 'w'))
 print('Files and logs saved to %s' % OUT_DIR)
 
-def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0):
+def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0, ptv=None):
     if attention_output:
         attention_plot = np.zeros((max_length_targ, max_length_inp))
         tag_attention_plot = np.zeros((max_length_targ, max_length_tag))
@@ -295,14 +347,19 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0):
     else:
         enc_mask, tag_mask = None, None
 
+    if use_ptv:
+        ptv = [ptv]
+
     decoder.reset()
     for t in range(max_length_targ):
         predictions, dec_states, attention_weights = decoder(dec_input,
                                                              dec_states,
                                                              enc_out,
                                                              tag_vecs=tag_output,
-                                                             enc_mask=enc_mask, tag_mask=tag_mask,
-                                                             training=False)
+                                                             enc_mask=enc_mask, 
+                                                             tag_mask=tag_mask,
+                                                             training=False,
+                                                             ptv=ptv)
         
         if attention_output:
             # storing the attention weights to plot later on
@@ -337,10 +394,11 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0):
         else:
             return result, sentence
 
-def output(sentence, fname, tags=None, inc_tags=False, mask=mask_level):
+def output(sentence, fname, tags=None, inc_tags=False, mask=mask_level, ptv=None):
     ou, ip, at = evaluate(sentence, tags, 
                           attention_output=True, 
                           inc_tags=inc_tags,
+                          ptv=ptv,
                           mask=mask_level)
     if inc_tags:
         plot_attention(
@@ -369,7 +427,7 @@ def loss_function(real, pred):
 
 @tf.function
 def train_step(inp, targ, mode='main', enc_state=None, training=True,
-        tag_inp=None, inc_tags=False, return_outputs=False, mask=0):
+        tag_inp=None, inc_tags=False, return_outputs=False, mask=0, ptv=None):
     loss = 0
     outputs = [[] for _ in range(BATCH_SIZE)]
     count = [True for _ in range(BATCH_SIZE)]
@@ -402,8 +460,10 @@ def train_step(inp, targ, mode='main', enc_state=None, training=True,
             # passing enc_output to the decoder
             predictions, dec_states, _ = decoder(dec_input, dec_states, enc_output,
                                                 tag_vecs=tag_output,
-                                                enc_mask=enc_mask, tag_mask=tag_mask,
-                                                training=training)
+                                                enc_mask=enc_mask,
+                                                tag_mask=tag_mask,
+                                                training=training,
+                                                ptv=ptv)
 
             loss += loss_function(targ[:, t], predictions)
 
@@ -453,11 +513,14 @@ while args.copy:
     start = time.time()
     total_loss = 0
     
-    for (batch, (inp, targ, tag)) in enumerate(copy_dataset):
-        batch_loss, _ = train_step(inp, targ, mode='warm-up', 
-                                   tag_inp=tag, 
+    for (batch, (inp, targ, tag, *ptv)) in enumerate(copy_dataset):
+        ptv = ptv[0] if len(ptv) else None
+        batch_loss, _ = train_step(inp, targ,
+                                   mode='warm-up',
+                                   tag_inp=tag,
                                    inc_tags=inc_tags,
-                                   mask=mask_level)
+                                   mask=mask_level,
+                                   ptv=ptv)
         total_loss += batch_loss
 
         if batch % 100 == 0:
@@ -476,21 +539,25 @@ while args.copy:
     val_total_loss = 0
     total_accuracy = 0
 
-    for (batch, (inp, targ, tag)) in enumerate(copy_val_dataset):
+    for (batch, (inp, targ, tag, *ptv)) in enumerate(copy_val_dataset):
+        ptv = ptv[0] if len(ptv) else None
         batch_loss, batch_accuracy = train_step(inp, targ,
                                                 mode='validation',
                                                 training=False, 
                                                 tag_inp=tag, 
                                                 inc_tags=inc_tags,
-                                                mask=mask_level)
+                                                mask=mask_level,
+                                                ptv=ptv)
         val_total_loss += batch_loss
         total_accuracy += batch_accuracy
     
     if epoch % 5 == 0:
         text = lang.sequences_to_texts([input_tensor_val[0]])[0]
-        text = text.replace(' ', '')
+        text = text[::2]
         tags = 'COPY'
-        output(text[1:-1], 'warmup-' + str(epoch), tags=tags, inc_tags=inc_tags, mask=mask_level)
+        ptv = ptv_tensor_val[0] if use_ptv else None
+        output(text[1:-1], 'warmup-' + str(epoch), tags=tags, 
+               inc_tags=inc_tags, mask=mask_level, ptv=ptv)
 
     val_total_loss /= (len(X_val) // BATCH_SIZE)
     total_accuracy /= ((len(X_val) // BATCH_SIZE) * BATCH_SIZE)
@@ -523,11 +590,14 @@ for epoch in range(EPOCHS):
     start = time.time()
     total_loss = 0
 
-    for (batch, (inp, targ, tag)) in enumerate(dataset.take(steps_per_epoch_train)):
-        batch_loss, _ = train_step(inp, targ, mode='main',
+    for (batch, (inp, targ, tag, *ptv)) in enumerate(dataset.take(steps_per_epoch_train)):
+        ptv = ptv[0] if len(ptv) else None
+        batch_loss, _ = train_step(inp, targ, 
+                                mode='main',
                                 tag_inp=tag, 
                                 inc_tags=inc_tags,
-                                mask=mask_level)
+                                mask=mask_level,
+                                ptv=ptv)
         total_loss += batch_loss
 
         if batch % 100 == 0:
@@ -539,9 +609,11 @@ for epoch in range(EPOCHS):
     checkpoint.step.assign_add(1)
     if epoch % 10 == 0:
         text = lang.sequences_to_texts([input_tensor_val[0]])[0]
-        text = text.replace(' ', '')
+        text = text[::2]
         tags = tag_tokenizer.sequences_to_texts([tag_tensor_val[0]])[0]
-        output(text[1:-1], 'main-' + str(epoch), tags=tags, inc_tags=inc_tags, mask=mask_level)
+        ptv = ptv_tensor_val[0] if use_ptv else None
+        output(text[1:-1], 'main-' + str(epoch), tags=tags, 
+               inc_tags=inc_tags, mask=mask_level, ptv=ptv)
     
     loss.append(total_loss / steps_per_epoch_train)
     print('Time taken for 1 epoch {} sec'.format(time.time() - start))
@@ -550,12 +622,15 @@ for epoch in range(EPOCHS):
     val_total_loss = 0
     total_accuracy = 0
 
-    for (batch, (inp, targ, tag)) in enumerate(val_dataset.take(steps_per_epoch_val)):
-        batch_loss, batch_accuracy = train_step(inp, targ, mode='validation',
+    for (batch, (inp, targ, tag, *ptv)) in enumerate(val_dataset.take(steps_per_epoch_val)):
+        ptv = ptv[0] if len(ptv) else None
+        batch_loss, batch_accuracy = train_step(inp, targ, 
+                                                mode='validation',
                                                 training=False, 
                                                 tag_inp=tag, 
                                                 inc_tags=inc_tags,
-                                                mask=mask_level)
+                                                mask=mask_level,
+                                                ptv=ptv)
         val_total_loss += batch_loss
         total_accuracy += batch_accuracy
     
@@ -622,12 +697,15 @@ with open(os.path.join(DATA_DIR, 'test.csv'), 'r') as f, \
      open(os.path.join(OUT_DIR, 'test.csv'), 'w') as o:
     corr = 0
     faul = 0
+    if use_ptv:
+        ptvs = load_ptv(os.path.join(DATA_DIR, 'ptv-test-%d.npy' % (ptv_dim)))
     for i, line in enumerate(f):
         if i >= min(2000, num_samples):
             break
         line = line.strip()
         tag, word, lemma = line.split('\t')
-        out, inp = evaluate(word, tag, inc_tags=inc_tags, mask=mask_level)
+        ptv = ptvs[i] if use_ptv else None
+        out, inp = evaluate(word, tag, inc_tags=inc_tags, mask=mask_level, ptv=ptv)
         out = out[:-1]
         if inc_tags:
             word_inp = inp[0][1:-1]
@@ -649,12 +727,15 @@ with open(os.path.join(DATA_DIR, 'train.csv'), 'r') as f, \
      open(os.path.join(OUT_DIR, 'train.csv'), 'w') as o:
     corr = 0
     faul = 0
+    if use_ptv:
+        ptvs = load_ptv(os.path.join(DATA_DIR, 'ptv-train-%d.npy' % (ptv_dim)))
     for i, line in enumerate(f):
         if i >= min(2000, num_samples):
             break
         line = line.strip()
         tag, word, lemma = line.split('\t')
-        out, inp = evaluate(word, tag, inc_tags=inc_tags, mask=mask_level)
+        ptv = ptvs[i] if use_ptv else None
+        out, inp = evaluate(word, tag, inc_tags=inc_tags, mask=mask_level, ptv=ptv)
         out = out[:-1]
         if inc_tags:
             word_inp = inp[0][1:-1]

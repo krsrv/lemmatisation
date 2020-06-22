@@ -68,7 +68,7 @@ class BahdanauAttention(tf.keras.layers.Layer):
         # score shape == (batch_size, max_length, 1)
         # we get 1 at the last axis because we are applying score to self.V
         # the shape of the tensor before applying self.V is (batch_size, max_length, units)
-        score = self.V(tf.nn.tanh(
+        score = self.V(tf.math.tanh(
             self.W1(query_with_time_axis) + self.W2(values)))
         if mask is not None:
             score = score + (mask * -1e9)
@@ -167,7 +167,7 @@ class StructuralLuongAttention(tf.keras.layers.Layer):
                   self.W_p(positional) + self.W_m(markov)
         
         # score shape == (batch_size, max_len, 1)
-        score = self.v(tf.nn.tanh(summand))
+        score = self.v(tf.math.tanh(summand))
         score = score + (mask * -1e9)
 
         # attention_weights shape == (batch_size, max_len, 1)
@@ -383,7 +383,8 @@ class TagEncoder(tf.keras.Model):
         return x  # (batch_size, input_seq_len, d_model)
 
 class Decoder(tf.keras.Model):
-    def __init__(self, vocab_size, embedding_dim, units, inc_tags=False, rate=0.2):
+    def __init__(self, vocab_size, embedding_dim, units, 
+                 inc_tags=False, use_ptv=False, rate=0.2):
         super(Decoder, self).__init__()
         self.dec_units = units
         self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
@@ -392,24 +393,28 @@ class Decoder(tf.keras.Model):
                                        return_state=True)
         self.fc = tf.keras.layers.Dense(vocab_size)
         self.inc_tags = inc_tags
+        self.use_ptv = use_ptv
 
         if inc_tags:
             # used for attention
             self.tag_attention = LuongAttention(2*self.dec_units)
             self.enc_attention = StructuralLuongAttention(self.dec_units)
+            self.dropout3 = tf.keras.layers.Dropout(rate)
         else:
             self.enc_attention = StructuralLuongAttention(self.dec_units)
 
-        self.W_c = tf.keras.layers.Dense(2*self.dec_units, use_bias=False)
-
+        if self.use_ptv:
+            self.W_ptv = tf.keras.layers.Dense(2*self.dec_units)
+            
+        self.W_c = tf.keras.layers.Dense(2*self.dec_units)
         self.dropout1 = tf.keras.layers.Dropout(rate)
         self.dropout2 = tf.keras.layers.Dropout(rate)
 
     def reset(self):
         self.enc_attention.reset()
 
-    def call(self, x, state, enc_output, tag_vecs=None, 
-             enc_mask=None, tag_mask=None, training=True):
+    def call(self, x, state, enc_output, tag_vecs=None, enc_mask=None,
+             tag_mask=None, training=True, ptv=None):
         # enc_output shape == (batch_size, max_length, hidden_size)
         # x shape after passing through embedding == (batch_size, 1, embedding_dim)
         x = self.embedding(x)
@@ -423,6 +428,7 @@ class Decoder(tf.keras.Model):
             
             s_k = tf.concat([s_prev, tag_context_vector], axis=-1)
             s_k = tf.math.tanh(self.W_c(s_k))
+            s_k = self.dropout3(s_k)
             
             # Attend over encoder vectors
             enc_context_vector, attention_weights = self.enc_attention(s_k, enc_output, enc_mask)
@@ -432,12 +438,10 @@ class Decoder(tf.keras.Model):
 
             # output shape == (batch_size * 1, hidden_size)
             output = tf.reshape(output, (-1, output.shape[2]))
-            
-            # output shape == (batch_size, vocab)
-            x = self.fc(output)
-            x = self.dropout1(x, training=training)
+            output = self.dropout2(output)
 
-            return x, (state_h, state_c), (attention_weights, tag_attention_weights)
+            attention_output = (attention_weights, tag_attention_weights)
+            state = (state_h, state_c)
         else:
             # passing the concatenated vector to the LSTM
             output, state_h, state_c = self.lstm(x, initial_state=state)
@@ -446,14 +450,23 @@ class Decoder(tf.keras.Model):
             output = tf.reshape(output, (-1, output.shape[2]))
             enc_context_vector, attention_weights = self.enc_attention(state_h, enc_output, enc_mask)
 
-            # output shape == (batch_size, 4*hidden_size)
+            # output shape == (batch_size, 3*hidden_size)
             output = tf.concat([output, enc_context_vector], axis=-1)
 
             # output shape == (batch_size, 2*hidden_size)
             output = tf.math.tanh(self.W_c(output))
+            output = self.dropout2(output)
             
-            # output shape == (batch_size, vocab)
-            x = self.fc(output)
-            x = self.dropout2(x, training=training)
+            attention_output = attention_weights
+            state = (state_h, state_c)
 
-            return x, (state_h, state_c), attention_weights
+        if self.use_ptv:
+            output = tf.concat([output, ptv], axis=-1)
+            output = tf.math.tanh(self.W_ptv(output))
+            output = self.dropout2(output)
+
+        # output shape == (batch_size, vocab)
+        x = self.fc(output)
+        x = self.dropout1(x, training=training)
+
+        return x, state, attention_output
