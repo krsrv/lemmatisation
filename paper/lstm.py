@@ -517,7 +517,7 @@ while args.copy:
 logger.info('Main phase')
 loss, val_loss, accuracy = [], [], []
 reduceLR = ReduceLRonPlateau(optimizer, patience=5, cooldown=10)
-# earlyStop = EarlyStopping(patience=5)
+earlyStop = EarlyStopping(patience=10, min_delta=0.)
 
 for epoch in range(EPOCHS):
     start = time.time()
@@ -575,10 +575,10 @@ for epoch in range(EPOCHS):
     
     if reduceLR(val_loss[-1]):
         logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
-    # if earlyStop(val_loss[-1]):
-    #     print('Early stopping callback. Main phase breaking')
-    #     logger.info('Main phase early stopping')
-    #     break
+    if earlyStop(val_loss[-1]):
+        print('Early stopping callback. Main phase breaking')
+        logger.info('Main phase early stopping')
+        break
     
     if accuracy[-1] > 0.99:
         print('Accuracy exceeded 99%. Main phase breaking')

@@ -18,7 +18,7 @@ class ReduceLRonPlateau():
             self.cooldown_counter -= 1
             self.wait = 0
 
-        if current - self.min_delta <= self.best:
+        if current - self.min_delta < self.best:
             self.best = current
             self.wait = 0
         elif self.cooldown_counter == 0:
@@ -41,7 +41,7 @@ class EarlyStopping():
         self.best = 1e9
 
     def __call__(self, current):
-        if current - self.min_delta <= self.best:
+        if current - self.min_delta < self.best:
             self.best = current
             self.wait = 0
         else:
@@ -58,7 +58,7 @@ class BahdanauAttention(tf.keras.layers.Layer):
         self.W2 = tf.keras.layers.Dense(units)
         self.V = tf.keras.layers.Dense(1)
 
-    def call(self, query, values):
+    def call(self, query, values, mask=None):
         # query hidden state shape == (batch_size, hidden size)
         # query_with_time_axis shape == (batch_size, 1, hidden size)
         # values shape == (batch_size, max_len, hidden size)
@@ -70,6 +70,8 @@ class BahdanauAttention(tf.keras.layers.Layer):
         # the shape of the tensor before applying self.V is (batch_size, max_length, units)
         score = self.V(tf.nn.tanh(
             self.W1(query_with_time_axis) + self.W2(values)))
+        if mask is not None:
+            score = score + (mask * -1e9)
 
         # attention_weights shape == (batch_size, max_length, 1)
         attention_weights = tf.nn.softmax(score, axis=1)
@@ -188,7 +190,7 @@ def create_padding_mask(seq, mode='luong'):
     elif mode == 'luong':
         seq = tf.cast(seq, tf.float32)
         return tf.expand_dims(seq, 1) # (batch_size, 1, seq_len)
-    elif mode == 'structure':
+    elif mode == 'structure' or mode == 'bahdanau':
         seq = tf.cast(seq, tf.float32)
         return tf.expand_dims(seq, 2) # (batch_size, seq_len, 1)
     elif mode == 'lstm':
@@ -290,20 +292,25 @@ class Encoder(tf.keras.Model):
         super(Encoder, self).__init__()
         self.enc_units = enc_units
         self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
-        self.lstm = tf.keras.layers.LSTM(self.enc_units,
+        self.lstm = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(
+                                       self.enc_units,
                                        return_sequences=True,
-                                       return_state=True)
+                                       return_state=True))
         self.dropout = tf.keras.layers.Dropout(rate)
 
     def call(self, x, state=None, mask=None, training=True):
         x = self.embedding(x)
         x = self.dropout(x, training=training)
 
-        output, state_h, state_c = self.lstm(x, initial_state=state, mask=mask)
+        output, *state = self.lstm(x, initial_state=state, mask=mask)
+        
+        state_h = tf.concat([state[0], state[2]], axis=-1)
+        state_c = tf.concat([state[1], state[3]], axis=-1)
+        
         return output, state_h, state_c
 
     def initial_state(self, batch_sz):
-        return (tf.zeros((batch_sz, self.enc_units)), tf.zeros((batch_sz, self.enc_units)))
+        return [tf.zeros((batch_sz, self.enc_units)) for _ in range(4)]
 
 class TransformerEncoderLayer(tf.keras.layers.Layer):
     def __init__(self, d_model, num_heads, dff, rate=0.2):
@@ -380,7 +387,7 @@ class Decoder(tf.keras.Model):
         super(Decoder, self).__init__()
         self.dec_units = units
         self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
-        self.lstm = tf.keras.layers.LSTM(self.dec_units,
+        self.lstm = tf.keras.layers.LSTM(2*self.dec_units,
                                        return_sequences=True,
                                        return_state=True)
         self.fc = tf.keras.layers.Dense(vocab_size)
@@ -388,12 +395,12 @@ class Decoder(tf.keras.Model):
 
         if inc_tags:
             # used for attention
-            self.tag_attention = LuongAttention(self.dec_units)
+            self.tag_attention = LuongAttention(2*self.dec_units)
             self.enc_attention = StructuralLuongAttention(self.dec_units)
         else:
             self.enc_attention = StructuralLuongAttention(self.dec_units)
 
-        self.W_c = tf.keras.layers.Dense(units, use_bias=False)
+        self.W_c = tf.keras.layers.Dense(2*self.dec_units, use_bias=False)
 
         self.dropout1 = tf.keras.layers.Dropout(rate)
         self.dropout2 = tf.keras.layers.Dropout(rate)
@@ -435,12 +442,14 @@ class Decoder(tf.keras.Model):
             # passing the concatenated vector to the LSTM
             output, state_h, state_c = self.lstm(x, initial_state=state)
 
-            # output shape == (batch_size * 1, hidden_size)
+            # output shape == (batch_size * 1, 2*hidden_size)
             output = tf.reshape(output, (-1, output.shape[2]))
             enc_context_vector, attention_weights = self.enc_attention(state_h, enc_output, enc_mask)
 
-            # output shape == (batch_size, hidden_size+embedding_dim)
+            # output shape == (batch_size, 4*hidden_size)
             output = tf.concat([output, enc_context_vector], axis=-1)
+
+            # output shape == (batch_size, 2*hidden_size)
             output = tf.math.tanh(self.W_c(output))
             
             # output shape == (batch_size, vocab)
