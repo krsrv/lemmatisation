@@ -56,8 +56,8 @@ parser.add_argument("--exc-tags", dest="exc_tags", required=False,
 parser.add_argument("--no-copy", dest="copy", required=False,
                     help="Skip copying/warm-up phase", action='store_false')
 parser.add_argument("--mask", dest="mask", required=False,
-                    help="masking level: 0 = no mask, 1 = mask to attention, 2 = mask to attention + LSTM", default=0, 
-                    type=int)
+                    help="masking level: 0 = no mask, 1 = mask to attention, 2 = mask to attention + LSTM",
+                    default=0, type=int)
 args = parser.parse_args()
 
 # Create new output directory
@@ -468,7 +468,7 @@ while args.copy:
     total_loss /= (len(X_train) // BATCH_SIZE)
     # Update checkpoint step variable and save
     checkpoint.step.assign_add(1)
-    epoch = int(checkpoint.step)
+    epoch = int(checkpoint.step) - 1
     if int(epoch) % 10 == 0:
         copy_manager.save()
     
@@ -493,13 +493,13 @@ while args.copy:
         output(text[1:-1], 'warmup-' + str(epoch), tags=tags, inc_tags=inc_tags, mask=mask_level)
 
     val_total_loss /= (len(X_val) // BATCH_SIZE)
-    total_accuracy /= (len(X_val))
+    total_accuracy /= ((len(X_val) // BATCH_SIZE) * BATCH_SIZE)
     
     print('Time taken for 1 epoch {} sec'.format(time.time() - start))
     print('Copy: Epoch {} Loss {:.4f} Validation {:.4f} Validation accuracy {}'.format(
-            epoch, total_loss, val_total_loss, total_accuracy))
+            epoch+1, total_loss, val_total_loss, total_accuracy))
     logger.info('Copy: Epoch {} Loss {:.4f} Validation {:.4f} Val Accuracy {}'.format(
-            epoch, total_loss, val_total_loss, total_accuracy))
+            epoch+1, total_loss, val_total_loss, total_accuracy))
 
     if total_accuracy >= 0.75:
         print('Successful. Copying phase over')
@@ -507,7 +507,7 @@ while args.copy:
         copy_manager.save()
         break
 
-    if epoch > 20:
+    if epoch >= 20:
         print('Epochs exceeded. Copying phase over')
         logger.info('Warm-up phase breaking with accuracy {}'.format(total_accuracy))
         copy_manager.save()
@@ -560,7 +560,7 @@ for epoch in range(EPOCHS):
         total_accuracy += batch_accuracy
     
     val_loss.append(val_total_loss / steps_per_epoch_val)
-    accuracy.append(total_accuracy / len(input_tensor_val))
+    accuracy.append(total_accuracy / ((len(input_tensor_val) // BATCH_SIZE) * BATCH_SIZE))
 
     print('Epoch {} Loss {:.4f} Validation {:.4f} Validation accuracy {}'.format(
             epoch + 1, loss[-1], val_loss[-1], total_accuracy))
@@ -580,8 +580,8 @@ for epoch in range(EPOCHS):
     #     logger.info('Main phase early stopping')
     #     break
     
-    if accuracy[-1] > 0.90 and False:
-        print('Accuracy exceeded 90%. Main phase breaking')
+    if accuracy[-1] > 0.99:
+        print('Accuracy exceeded 99%. Main phase breaking')
         logger.info('Main phase finished with accuracy {}'.format(accuracy[-1]))
         main_manager['latest'].save()
         break
