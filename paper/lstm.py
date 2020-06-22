@@ -56,8 +56,8 @@ parser.add_argument("--exc-tags", dest="exc_tags", required=False,
 parser.add_argument("--no-copy", dest="copy", required=False,
                     help="Skip copying/warm-up phase", action='store_false')
 parser.add_argument("--mask", dest="mask", required=False,
-                    help="masking level: 0 = no mask, 1 = mask to attention, 2 = mask to attention + LSTM", default=0, 
-                    type=int)
+                    help="masking level: 0 = no mask, 1 = mask to attention, 2 = mask to attention + LSTM",
+                    default=0, type=int)
 args = parser.parse_args()
 
 # Create new output directory
@@ -290,11 +290,12 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0):
     dec_states = (enc_hidden, enc_c)
     dec_input = tf.expand_dims([lang.word_index[START_TOK]], 0)
     if mask == 1 or mask == 2:
-        enc_mask = create_padding_mask(inputs, 'luong')
+        enc_mask = create_padding_mask(inputs, 'structure')
         tag_mask = create_padding_mask(tag_input, 'luong') if inc_tags else None
     else:
         enc_mask, tag_mask = None, None
 
+    decoder.reset()
     for t in range(max_length_targ):
         predictions, dec_states, attention_weights = decoder(dec_input,
                                                              dec_states,
@@ -391,12 +392,12 @@ def train_step(inp, targ, mode='main', enc_state=None, training=True,
         dec_states = (enc_hidden, enc_c)
         dec_input = tf.expand_dims([lang.word_index[START_TOK]] * BATCH_SIZE, 1)
         if mask == 1 or mask == 2:
-            enc_mask = create_padding_mask(inp, 'luong')
+            enc_mask = create_padding_mask(inp, 'structure')
             tag_mask = create_padding_mask(tag_inp, 'luong') if inc_tags else None
         else:
             enc_mask, tag_mask = None, None
         
-        # Teacher forcing - feeding the target as the next input
+        decoder.reset()
         for t in range(1, targ.shape[1]):
             # passing enc_output to the decoder
             predictions, dec_states, _ = decoder(dec_input, dec_states, enc_output,
@@ -467,7 +468,7 @@ while args.copy:
     total_loss /= (len(X_train) // BATCH_SIZE)
     # Update checkpoint step variable and save
     checkpoint.step.assign_add(1)
-    epoch = int(checkpoint.step)
+    epoch = int(checkpoint.step) - 1
     if int(epoch) % 10 == 0:
         copy_manager.save()
     
@@ -486,19 +487,19 @@ while args.copy:
         total_accuracy += batch_accuracy
     
     if epoch % 5 == 0:
-        text = lang.sequences_to_texts([input_tensor_train[0]])[0]
-        tags = 'COPY'
+        text = lang.sequences_to_texts([input_tensor_val[0]])[0]
         text = text.replace(' ', '')
+        tags = 'COPY'
         output(text[1:-1], 'warmup-' + str(epoch), tags=tags, inc_tags=inc_tags, mask=mask_level)
 
     val_total_loss /= (len(X_val) // BATCH_SIZE)
-    total_accuracy /= (len(X_val))
+    total_accuracy /= ((len(X_val) // BATCH_SIZE) * BATCH_SIZE)
     
     print('Time taken for 1 epoch {} sec'.format(time.time() - start))
     print('Copy: Epoch {} Loss {:.4f} Validation {:.4f} Validation accuracy {}'.format(
-            epoch, total_loss, val_total_loss, total_accuracy))
+            epoch+1, total_loss, val_total_loss, total_accuracy))
     logger.info('Copy: Epoch {} Loss {:.4f} Validation {:.4f} Val Accuracy {}'.format(
-            epoch, total_loss, val_total_loss, total_accuracy))
+            epoch+1, total_loss, val_total_loss, total_accuracy))
 
     if total_accuracy >= 0.75:
         print('Successful. Copying phase over')
@@ -506,7 +507,7 @@ while args.copy:
         copy_manager.save()
         break
 
-    if epoch > 20:
+    if epoch >= 20:
         print('Epochs exceeded. Copying phase over')
         logger.info('Warm-up phase breaking with accuracy {}'.format(total_accuracy))
         copy_manager.save()
@@ -537,9 +538,9 @@ for epoch in range(EPOCHS):
     # Update checkpoint step variable and save
     checkpoint.step.assign_add(1)
     if epoch % 10 == 0:
-        text = lang.sequences_to_texts([input_tensor_train[0]])[0]
+        text = lang.sequences_to_texts([input_tensor_val[0]])[0]
         text = text.replace(' ', '')
-        tags = tag_tokenizer.sequences_to_texts([tag_tensor_train[0]])[0]
+        tags = tag_tokenizer.sequences_to_texts([tag_tensor_val[0]])[0]
         output(text[1:-1], 'main-' + str(epoch), tags=tags, inc_tags=inc_tags, mask=mask_level)
     
     loss.append(total_loss / steps_per_epoch_train)
@@ -559,7 +560,7 @@ for epoch in range(EPOCHS):
         total_accuracy += batch_accuracy
     
     val_loss.append(val_total_loss / steps_per_epoch_val)
-    accuracy.append(total_accuracy / len(input_tensor_val))
+    accuracy.append(total_accuracy / ((len(input_tensor_val) // BATCH_SIZE) * BATCH_SIZE))
 
     print('Epoch {} Loss {:.4f} Validation {:.4f} Validation accuracy {}'.format(
             epoch + 1, loss[-1], val_loss[-1], total_accuracy))
@@ -579,8 +580,8 @@ for epoch in range(EPOCHS):
     #     logger.info('Main phase early stopping')
     #     break
     
-    if accuracy[-1] > 0.90:
-        print('Accuracy exceeded 90%. Main phase breaking')
+    if accuracy[-1] > 0.99:
+        print('Accuracy exceeded 99%. Main phase breaking')
         logger.info('Main phase finished with accuracy {}'.format(accuracy[-1]))
         main_manager['latest'].save()
         break
