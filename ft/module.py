@@ -427,8 +427,7 @@ class Decoder(tf.keras.Model):
             tag_context_vector, tag_attention_weights = self.tag_attention(s_prev, tag_vecs, tag_mask)
             
             s_k = tf.concat([s_prev, tag_context_vector], axis=-1)
-            s_k = tf.math.tanh(self.W_c(s_k))
-            s_k = self.dropout3(s_k)
+            s_k = tf.math.tanh(self.dropout3(self.W_c(s_k)))
             
             # Attend over encoder vectors
             enc_context_vector, attention_weights = self.enc_attention(s_k, enc_output, enc_mask)
@@ -454,16 +453,14 @@ class Decoder(tf.keras.Model):
             output = tf.concat([output, enc_context_vector], axis=-1)
 
             # output shape == (batch_size, 2*hidden_size)
-            output = tf.math.tanh(self.W_c(output))
-            output = self.dropout2(output)
+            output = tf.math.tanh(self.dropout2(self.W_c(output)))
             
             attention_output = attention_weights
             state = (state_h, state_c)
 
         if self.use_ptv:
             output = tf.concat([output, ptv], axis=-1)
-            output = tf.math.tanh(self.W_ptv(output))
-            output = self.dropout2(output)
+            output = tf.math.tanh(self.dropout2(self.W_ptv(output)))
 
         # output shape == (batch_size, vocab)
         x = self.fc(output)
