@@ -1,6 +1,6 @@
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = "3"
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"]="true"
 
 import tensorflow as tf
@@ -56,11 +56,18 @@ parser.add_argument("--inp-dir", dest="inp_dir", required=False,
                     type=str)
 parser.add_argument("--exc-tags", dest="exc_tags", required=False,
                     help="Use tags", action='store_true')
+parser.add_argument("--cnst-tag", dest="cnst_tag", required=False,
+                    help="Attend over tags only once", action='store_true')
 parser.add_argument("--no-copy", dest="copy", required=False,
                     help="Skip copying/warm-up phase", action='store_false')
+parser.add_argument("--copy-threshold", dest="copy_threshold", required=False,
+                    help="Accuracy threshold (0-1) for warmup phase", 
+                    default=0.75, type=float)
 parser.add_argument("--mask", dest="mask", required=False,
                     help="masking level: 0 = no mask, 1 = mask to attention, 2 = mask to attention + LSTM",
                     default=0, type=int)
+parser.add_argument("--test-img", dest="test_img", required=False,
+                    help="Output test images as well", action='store_true')
 args = parser.parse_args()
 
 # Create new output directory
@@ -90,6 +97,10 @@ input_file = os.path.join(DATA_DIR, 'train.csv')
 dev_file = os.path.join(DATA_DIR, 'dev.csv')
 
 inc_tags = not args.exc_tags
+cnst_tag = args.cnst_tag
+
+assert (not cnst_tag or inc_tags)
+
 mask_level = args.mask
 use_ptv = (args.ptv_dim > 0)
 
@@ -242,10 +253,10 @@ tag_encoder = None
 if inc_tags:
     tag_encoder = TagEncoder(num_layers=1, d_model=units, num_heads=1, 
                          dff=256, input_vocab_size=vocab_tag_size,
-                         rate=args.dropout)
+                         cnst_tag=cnst_tag, rate=args.dropout)
 
-decoder = Decoder(vocab_tar_size, embedding_dim, units, 
-                  inc_tags=inc_tags, rate=args.dropout, use_ptv=use_ptv)
+decoder = Decoder(vocab_tar_size, embedding_dim, units, inc_tags=inc_tags, 
+                  rate=args.dropout, use_ptv=use_ptv, cnst_tag=cnst_tag)
 
 optimizer = tf.keras.optimizers.Adam(args.lr)
 loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
@@ -292,8 +303,11 @@ options = {
     'output_dir': OUT_DIR,
     'warmup': args.copy,
     'mask': mask_level,
-    'use_ptv': use_ptv
+    'use_ptv': use_ptv,
+    'cnst_tag': cnst_tag
 }
+if args.copy:
+    options['copy_threshold'] = args.copy_threshold
 if inc_tags:
     options['max_length_tag'] = max_length_tag
     options['tag_encoder'] = {
@@ -308,7 +322,8 @@ if use_ptv:
 json.dump(options, open(os.path.join(OUT_DIR, 'options.json'), 'w'))
 print('Files and logs saved to %s' % OUT_DIR)
 
-def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0, ptv=None):
+def evaluate(sentence, tags, attention_output=False, 
+    inc_tags=False, mask=0, ptv=None, cnst_tag=False):
     if attention_output:
         attention_plot = np.zeros((max_length_targ, max_length_inp))
         tag_attention_plot = np.zeros((max_length_targ, max_length_tag))
@@ -337,6 +352,10 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0, ptv
     else:
         tag_output, tag_mask = None, None
 
+    if cnst_tag:
+        tag_mask = create_padding_mask(tag_input, 'luong')
+        tag_output, tag_attention_weights = tag_encoder.attend(enc_out, tag_output, tag_mask)
+
     result = ''
 
     dec_states = (enc_hidden, enc_c)
@@ -363,7 +382,13 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0, ptv
         
         if attention_output:
             # storing the attention weights to plot later on
-            if inc_tags:
+            if cnst_tag:
+                buff = tf.reshape(attention_weights[0], (-1, ))
+                attention_plot[t] = buff.numpy()
+
+                buff = tf.reshape(tag_attention_weights[0], (-1, ))
+                tag_attention_plot[t] = buff.numpy()
+            elif inc_tags:
                 buff = tf.reshape(attention_weights[0], (-1, ))
                 attention_plot[t] = buff.numpy()
 
@@ -394,12 +419,15 @@ def evaluate(sentence, tags, attention_output=False, inc_tags=False, mask=0, ptv
         else:
             return result, sentence
 
-def output(sentence, fname, tags=None, inc_tags=False, mask=mask_level, ptv=None):
+def output(sentence, fname, tags=None, inc_tags=False, mask=mask_level, 
+           ptv=None, cnst_tag=False):
     ou, ip, at = evaluate(sentence, tags, 
                           attention_output=True, 
                           inc_tags=inc_tags,
                           ptv=ptv,
-                          mask=mask_level)
+                          mask=mask_level,
+                          cnst_tag=cnst_tag)
+    # cnst_tag returns the same output from evaluate() as inc_tags
     if inc_tags:
         plot_attention(
             at[0][:len(ou), :len(ip[0])], 
@@ -427,7 +455,8 @@ def loss_function(real, pred):
 
 @tf.function
 def train_step(inp, targ, mode='main', enc_state=None, training=True,
-        tag_inp=None, inc_tags=False, return_outputs=False, mask=0, ptv=None):
+               tag_inp=None, inc_tags=False, return_outputs=False, mask=0, 
+               ptv=None, cnst_tag=False):
     loss = 0
     outputs = [[] for _ in range(BATCH_SIZE)]
     count = [True for _ in range(BATCH_SIZE)]
@@ -443,9 +472,10 @@ def train_step(inp, targ, mode='main', enc_state=None, training=True,
         if inc_tags:
             tag_mask = create_padding_mask(tag_inp, 'transformer')
             tag_output = tag_encoder(tag_inp, training=True, mask=tag_mask)
-            
-            # Different mask needed for non-transformer architecture
+
+        if cnst_tag:
             tag_mask = create_padding_mask(tag_inp, 'luong')
+            tag_output, _ = tag_encoder.attend(enc_output, tag_output, tag_mask)
         
         dec_states = (enc_hidden, enc_c)
         dec_input = tf.expand_dims([lang.word_index[START_TOK]] * BATCH_SIZE, 1)
@@ -520,7 +550,8 @@ while args.copy:
                                    tag_inp=tag,
                                    inc_tags=inc_tags,
                                    mask=mask_level,
-                                   ptv=ptv)
+                                   ptv=ptv,
+                                   cnst_tag=cnst_tag)
         total_loss += batch_loss
 
         if batch % 100 == 0:
@@ -547,7 +578,8 @@ while args.copy:
                                                 tag_inp=tag, 
                                                 inc_tags=inc_tags,
                                                 mask=mask_level,
-                                                ptv=ptv)
+                                                ptv=ptv,
+                                                cnst_tag=cnst_tag)
         val_total_loss += batch_loss
         total_accuracy += batch_accuracy
     
@@ -556,8 +588,8 @@ while args.copy:
         text = text[::2]
         tags = 'COPY'
         ptv = ptv_tensor_val[0] if use_ptv else None
-        output(text[1:-1], 'warmup-' + str(epoch), tags=tags, 
-               inc_tags=inc_tags, mask=mask_level, ptv=ptv)
+        output(text[1:-1], 'warmup-' + str(epoch), tags=tags, inc_tags=inc_tags, 
+               mask=mask_level, ptv=ptv, cnst_tag=cnst_tag)
 
     val_total_loss /= (len(X_val) // BATCH_SIZE)
     total_accuracy /= ((len(X_val) // BATCH_SIZE) * BATCH_SIZE)
@@ -568,7 +600,7 @@ while args.copy:
     logger.info('Copy: Epoch {} Loss {:.4f} Validation {:.4f} Val Accuracy {}'.format(
             epoch+1, total_loss, val_total_loss, total_accuracy))
 
-    if total_accuracy >= 0.75:
+    if total_accuracy >= args.copy_threshold:
         print('Successful. Copying phase over')
         logger.info('Warm-up phase finished with accuracy {}'.format(total_accuracy))
         copy_manager.save()
@@ -597,7 +629,8 @@ for epoch in range(EPOCHS):
                                 tag_inp=tag, 
                                 inc_tags=inc_tags,
                                 mask=mask_level,
-                                ptv=ptv)
+                                ptv=ptv,
+                                cnst_tag=cnst_tag)
         total_loss += batch_loss
 
         if batch % 100 == 0:
@@ -612,8 +645,8 @@ for epoch in range(EPOCHS):
         text = text[::2]
         tags = tag_tokenizer.sequences_to_texts([tag_tensor_val[0]])[0]
         ptv = ptv_tensor_val[0] if use_ptv else None
-        output(text[1:-1], 'main-' + str(epoch), tags=tags, 
-               inc_tags=inc_tags, mask=mask_level, ptv=ptv)
+        output(text[1:-1], 'main-' + str(epoch), tags=tags, inc_tags=inc_tags, 
+               mask=mask_level, ptv=ptv, cnst_tag=cnst_tag)
     
     loss.append(total_loss / steps_per_epoch_train)
     print('Time taken for 1 epoch {} sec'.format(time.time() - start))
@@ -630,7 +663,8 @@ for epoch in range(EPOCHS):
                                                 tag_inp=tag, 
                                                 inc_tags=inc_tags,
                                                 mask=mask_level,
-                                                ptv=ptv)
+                                                ptv=ptv,
+                                                cnst_tag=cnst_tag)
         val_total_loss += batch_loss
         total_accuracy += batch_accuracy
     
@@ -699,13 +733,21 @@ with open(os.path.join(DATA_DIR, 'test.csv'), 'r') as f, \
     faul = 0
     if use_ptv:
         ptvs = load_ptv(os.path.join(DATA_DIR, 'ptv-test-%d.npy' % (ptv_dim)))
+    if args.test_img:
+        os.makedirs(os.path.join(OUT_DIR, 'pictures'))
     for i, line in enumerate(f):
         if i >= min(2000, num_samples):
             break
         line = line.strip()
         tag, word, lemma = line.split('\t')
         ptv = ptvs[i] if use_ptv else None
-        out, inp = evaluate(word, tag, inc_tags=inc_tags, mask=mask_level, ptv=ptv)
+        out, inp, *at = evaluate(word, tag, inc_tags=inc_tags, mask=mask_level,
+                            ptv=ptv, cnst_tag=cnst_tag, attention_output=args.test_img)
+        if args.test_img and inc_tags:
+            plot_attention(
+                at[0][1][:len(out), :len(inp[1].split())+1], 
+                inp[1].split() + ['blank'], [x for x in out], 
+                os.path.join(OUT_DIR, 'pictures', str(i) + '-tag.png'))
         out = out[:-1]
         if inc_tags:
             word_inp = inp[0][1:-1]
@@ -735,7 +777,7 @@ with open(os.path.join(DATA_DIR, 'train.csv'), 'r') as f, \
         line = line.strip()
         tag, word, lemma = line.split('\t')
         ptv = ptvs[i] if use_ptv else None
-        out, inp = evaluate(word, tag, inc_tags=inc_tags, mask=mask_level, ptv=ptv)
+        out, inp = evaluate(word, tag, inc_tags=inc_tags, mask=mask_level, ptv=ptv, cnst_tag=cnst_tag)
         out = out[:-1]
         if inc_tags:
             word_inp = inp[0][1:-1]
