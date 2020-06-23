@@ -136,12 +136,19 @@ def load_dataset(path, num_examples=None, clip_length=None, tokenizer=None):
     input_tensor, _ = tokenize(inp_lang, lang_tokenizer)
     target_tensor, _ = tokenize(targ_lang, lang_tokenizer)
 
+    reverse_input = [inp[::-1] for inp in inp_lang]
+    input_reverse_tensor, _ = tokenize(reverse_input, lang_tokenizer)
+
+    reverse_target = [targ[::-1] for targ in targ_lang]
+    target_reverse_tensor, _ = tokenize(reverse_target, lang_tokenizer)
+
     if tag_tokenizer is None:
         tag_tensor, tag_tokenizer = tag_tokenize(tags)
     else:
         tag_tensor, _ = tag_tokenize(tags, tag_tokenizer)
 
-    return (input_tensor, target_tensor, tag_tensor), (lang_tokenizer, tag_tokenizer)
+    return (input_tensor, input_reverse_tensor, target_tensor, target_reverse_tensor, tag_tensor), \
+           (lang_tokenizer, tag_tokenizer)
 
 def save_tokenizer(tokenizer, file_path):
     with open(file_path, 'wb') as handle:

@@ -124,8 +124,12 @@ if os.path.exists(dev_file):
     tensor_val, _ = load_dataset(
         dev_file, num_samples, clip_length, tokenizer=tokenizer)
 
-    input_tensor_train, target_tensor_train, tag_tensor_train = tensor
-    input_tensor_val, target_tensor_val, tag_tensor_val = tensor_val
+    input_tensor_train, input_reverse_tensor_train, \
+        target_tensor_train, target_reverse_tensor_train, \
+        tag_tensor_train = tensor
+    input_tensor_val, input_reverse_tensor_val, \
+        target_tensor_val, target_reverse_tensor_val, \
+        tag_tensor_val = tensor_val
 
     # input_tensor = pad(input_tensor_train, input_tensor_val)
     # target_tensor = pad(target_tensor_train, target_tensor_val)
@@ -135,19 +139,27 @@ else:
     tensor, tokenizer = load_dataset(
         input_file, num_samples, clip_length, tokenizer=tokenizer)
 
-    input_tensor, target_tensor, tag_tensor = tensor[0], tensor[1], tensor[2]
+    input_tensor, input_reverse_tensor, target_tensor, tag_tensor = tensor
 
     if use_ptv:
         ptv_tensor = load_ptv(ptv_train_file, ptv_dim, num_samples)
-        input_tensor_train, input_tensor_val, target_tensor_train, \
-            target_tensor_val, tag_tensor_train, tag_tensor_val, \
+        input_tensor_train, input_tensor_val, \
+            input_reverse_tensor_train, input_reverse_tensor_val, \
+            target_tensor_train, target_tensor_val, \
+            target_reverse_tensor_train, target_reverse_tensor_val, \
+            tag_tensor_train, tag_tensor_val, \
             ptv_tensor_train, ptv_tensor_val = \
-            train_test_split(input_tensor, target_tensor, tag_tensor, ptv_tensor, test_size=0.2)
+            train_test_split(input_tensor, input_reverse_tensor, target_tensor, 
+                             target_reverse_tensor, tag_tensor, ptv_tensor, test_size=0.2)
     else:
         # Creating training and validation sets using an 80-20 split
-        input_tensor_train, input_tensor_val, target_tensor_train, \
-            target_tensor_val, tag_tensor_train, tag_tensor_val = \
-            train_test_split(input_tensor, target_tensor, tag_tensor, test_size=0.2)
+        input_tensor_train, input_tensor_val, \
+            input_reverse_tensor_train, input_reverse_tensor_val, \
+            target_tensor_train, target_tensor_val, \
+            target_reverse_tensor_train, target_reverse_tensor_val, \
+            tag_tensor_train, tag_tensor_val = \
+            train_test_split(input_tensor, input_reverse_tensor, target_tensor, 
+                             target_reverse_tensor, tag_tensor, test_size=0.2)
     
 max_length_targ = max(target_tensor_val.shape[1], target_tensor_train.shape[1])
 max_length_inp =  max(input_tensor_train.shape[1], input_tensor_val.shape[1])
@@ -203,25 +215,27 @@ copy_tag_tensor_val = np.repeat(copy_tag_tensor, input_tensor_val.shape[0], axis
 
 # The tensors need to be padded to have the same sequence length
 X_train = pad(input_tensor_train, target_tensor_train, concatenate=True)
+X_reverse_train = pad(input_reverse_tensor_train, target_reverse_tensor_train, concatenate=True)
 Y_train = X_train[:, :]
 T_train = pad(copy_tag_tensor_train, tag_tensor_train)
 if use_ptv:
     ptv_zero = np.zeros(ptv_tensor_train.shape, dtype=np.float32)
-    V_train = np.concatenate([ptv_zero, ptv_tensor_train], axis=0)
+    PTV_train = np.concatenate([ptv_zero, ptv_tensor_train], axis=0)
 
 X_val = pad(input_tensor_val, target_tensor_val, concatenate=True)
+X_reverse_val = pad(input_reverse_tensor_val, target_reverse_tensor_val, concatenate=True)
 Y_val = X_val[:, :]
 T_val = pad(copy_tag_tensor_val, tag_tensor_val)
 if use_ptv:
     ptv_zero = np.zeros(ptv_tensor_val.shape, dtype=np.float32)
-    V_val = np.concatenate([ptv_zero, ptv_tensor_val], axis=0)
+    PTV_val = np.concatenate([ptv_zero, ptv_tensor_val], axis=0)
 
 if use_ptv:
-    copy_dataset = (X_train, Y_train, T_train, V_train)
-    copy_val_dataset = (X_val, Y_val, T_val, V_val)
+    copy_dataset = (X_train, X_reverse_train, Y_train, T_train, PTV_train)
+    copy_val_dataset = (X_val, X_reverse_val, Y_val, T_val, PTV_val)
 else:
-    copy_dataset = (X_train, Y_train, T_train)
-    copy_val_dataset = (X_val, Y_val, T_val)
+    copy_dataset = (X_train, X_reverse_train, Y_train, T_train)
+    copy_val_dataset = (X_val, X_reverse_val, Y_val, T_val)
 
 copy_dataset = tf.data.Dataset.from_tensor_slices(
     copy_dataset).shuffle(2*BUFFER_SIZE)
@@ -233,11 +247,13 @@ copy_val_dataset = copy_val_dataset.batch(BATCH_SIZE, drop_remainder=True)
 
 # Create dataset for the main phase
 if use_ptv:
-    dataset = (input_tensor_train, target_tensor_train, tag_tensor_train, ptv_tensor_train)
-    val_dataset = (input_tensor_val, target_tensor_val, tag_tensor_val, ptv_tensor_val)
+    dataset = (input_tensor_train, input_reverse_tensor_train, target_tensor_train, \
+               tag_tensor_train, ptv_tensor_train)
+    val_dataset = (input_tensor_val, input_reverse_tensor_val, target_tensor_val, \
+                   tag_tensor_val, ptv_tensor_val)
 else:
-    dataset = (input_tensor_train, target_tensor_train, tag_tensor_train)
-    val_dataset = (input_tensor_val, target_tensor_val, tag_tensor_val)
+    dataset = (input_tensor_train, input_reverse_tensor_train, target_tensor_train, tag_tensor_train)
+    val_dataset = (input_tensor_val, input_reverse_tensor_val, target_tensor_val, tag_tensor_val)
 
 dataset = tf.data.Dataset.from_tensor_slices(
     dataset).shuffle(BUFFER_SIZE)
@@ -334,10 +350,15 @@ def evaluate(sentence, tags, attention_output=False,
     inputs = tf.keras.preprocessing.sequence.pad_sequences(inputs,
                                                          maxlen=max_length_inp,
                                                          padding='post')
+    reverse_input = tf.keras.preprocessing.sequence.pad_sequences(inputs[::-1],
+                                                         maxlen=max_length_inp,
+                                                         padding='post')
     inputs = tf.convert_to_tensor(inputs)
+    reverse_input = tf.convert_to_tensor(reverse_input)
+
     enc_mask = create_padding_mask(inputs, 'lstm') if mask == 2 else None
     
-    enc_out, enc_hidden, enc_c = encoder(inputs, training=False, mask=enc_mask)
+    enc_out, enc_hidden, enc_c = encoder(inputs, reverse_input, training=False, mask=enc_mask)
 
     if inc_tags:
         tags = preprocess_tags(tags)
@@ -454,7 +475,7 @@ def loss_function(real, pred):
     return tf.reduce_mean(loss_)
 
 @tf.function
-def train_step(inp, targ, mode='main', enc_state=None, training=True,
+def train_step(inp, inp_rev, targ, mode='main', enc_state=None, training=True,
                tag_inp=None, inc_tags=False, return_outputs=False, mask=0, 
                ptv=None, cnst_tag=False):
     loss = 0
@@ -463,7 +484,7 @@ def train_step(inp, targ, mode='main', enc_state=None, training=True,
 
     with tf.GradientTape() as tape:
         enc_mask = create_padding_mask(inp, 'lstm') if mask == 2 else None
-        enc_output, enc_hidden, enc_c = encoder(inp, 
+        enc_output, enc_hidden, enc_c = encoder(inp, inp_rev,
                                                 state=enc_state, 
                                                 training=training,
                                                 mask=enc_mask)
@@ -543,9 +564,9 @@ while args.copy:
     start = time.time()
     total_loss = 0
     
-    for (batch, (inp, targ, tag, *ptv)) in enumerate(copy_dataset):
+    for (batch, (inp, inp_rev, targ, tag, *ptv)) in enumerate(copy_dataset):
         ptv = ptv[0] if len(ptv) else None
-        batch_loss, _ = train_step(inp, targ,
+        batch_loss, _ = train_step(inp, inp_rev, targ,
                                    mode='warm-up',
                                    tag_inp=tag,
                                    inc_tags=inc_tags,
@@ -570,9 +591,9 @@ while args.copy:
     val_total_loss = 0
     total_accuracy = 0
 
-    for (batch, (inp, targ, tag, *ptv)) in enumerate(copy_val_dataset):
+    for (batch, (inp, inp_rev, targ, tag, *ptv)) in enumerate(copy_val_dataset):
         ptv = ptv[0] if len(ptv) else None
-        batch_loss, batch_accuracy = train_step(inp, targ,
+        batch_loss, batch_accuracy = train_step(inp, inp_rev, targ,
                                                 mode='validation',
                                                 training=False, 
                                                 tag_inp=tag, 
@@ -622,9 +643,9 @@ for epoch in range(EPOCHS):
     start = time.time()
     total_loss = 0
 
-    for (batch, (inp, targ, tag, *ptv)) in enumerate(dataset.take(steps_per_epoch_train)):
+    for (batch, (inp, inp_rev, targ, tag, *ptv)) in enumerate(dataset.take(steps_per_epoch_train)):
         ptv = ptv[0] if len(ptv) else None
-        batch_loss, _ = train_step(inp, targ, 
+        batch_loss, _ = train_step(inp, inp_rev, targ, 
                                 mode='main',
                                 tag_inp=tag, 
                                 inc_tags=inc_tags,
@@ -655,9 +676,9 @@ for epoch in range(EPOCHS):
     val_total_loss = 0
     total_accuracy = 0
 
-    for (batch, (inp, targ, tag, *ptv)) in enumerate(val_dataset.take(steps_per_epoch_val)):
+    for (batch, (inp, inp_rev, targ, tag, *ptv)) in enumerate(val_dataset.take(steps_per_epoch_val)):
         ptv = ptv[0] if len(ptv) else None
-        batch_loss, batch_accuracy = train_step(inp, targ, 
+        batch_loss, batch_accuracy = train_step(inp, inp_rev, targ, 
                                                 mode='validation',
                                                 training=False, 
                                                 tag_inp=tag, 

@@ -374,20 +374,30 @@ class Encoder(tf.keras.Model):
         super(Encoder, self).__init__()
         self.enc_units = enc_units
         self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
-        self.lstm = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(
-                                       self.enc_units,
-                                       return_sequences=True,
-                                       return_state=True))
-        self.dropout = tf.keras.layers.Dropout(rate)
-
-    def call(self, x, state=None, mask=None, training=True):
-        x = self.embedding(x)
-        x = self.dropout(x, training=training)
-
-        output, *state = self.lstm(x, initial_state=state, mask=mask)
         
-        state_h = tf.concat([state[0], state[2]], axis=-1)
-        state_c = tf.concat([state[1], state[3]], axis=-1)
+        self.flstm = tf.keras.layers.LSTM(self.enc_units,
+                                          return_sequences=True,
+                                          return_state=True)
+        self.blstm = tf.keras.layers.LSTM(self.enc_units,
+                                          return_sequences=True,
+                                          return_state=True)
+        
+        self.dropout1 = tf.keras.layers.Dropout(rate)
+        self.dropout2 = tf.keras.layers.Dropout(rate)
+
+    def call(self, x, x_rev, state=None, mask=None, training=True):
+        x = self.embedding(x)
+        x = self.dropout1(x, training=training)
+
+        x_rev = self.embedding(x_rev)
+        x_rev = self.dropout2(x_rev, training=training)
+
+        output1, state_h1, state_c1 = self.flstm(x, initial_state=state, mask=mask)
+        output2, state_h2, state_c2 = self.blstm(x_rev, initial_state=state, mask=mask)
+        
+        output = tf.concat([output1, output2], axis=-1)
+        state_h = tf.concat([state_h1, state_h2], axis=-1)
+        state_c = tf.concat([state_c1, state_c2], axis=-1)
         
         return output, state_h, state_c
 
