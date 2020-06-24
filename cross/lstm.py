@@ -17,7 +17,8 @@ import json
 import logging
 
 from module import Encoder, Decoder, TransformerEncoder, Embedding, Dense
-from module import create_padding_mask, ReduceLRonPlateau, EarlyStopping
+from module import ReduceLRonPlateau, EarlyStopping, swish
+from train_module import TrainStep, Run
 from helper import *
 
 parser = argparse.ArgumentParser(description="Train character seq2seq model", 
@@ -46,15 +47,10 @@ parser.add_argument("--dropout", dest="dropout", required=False,
 parser.add_argument("--L1", dest="L1", required=False,
                     help="High resource language directory", default=None,
                     type=str)
-parser.add_argument("--L2", dest="L2", required=False,
-                    help="Low resource language directory",
-                    default=0, type=int)
-parser.add_argument("--out-dir", dest="out_dir", required=False,
-                    help="output directory",
-                    default=0, type=int)
-parser.add_argument("--copy-threshold", dest="copy_threshold", required=False,
-                    help="Accuracy threshold (0-1) for warmup phase", 
-                    default=0.75, type=float)
+parser.add_argument("--L2", dest="L2", required=True,
+                    help="Low resource language directory", type=str)
+parser.add_argument("--out-dir", dest="out_dir", required=True,
+                    help="output directory", type=str)
 parser.add_argument("--mask", dest="mask", required=False,
                     help="masking level: 0 = no mask, 1 = mask to attention",
                     default=0, type=int)
@@ -93,30 +89,30 @@ epochs = list(map(int, args.epochs.split(',')))
 
 # Load data from files to variables
 # Each tensor is a tuple: (input, target, tag)
-train_tensors_L1, test_tensors_L1, val_tensors_L1, tokenizer_L1 = load_ttd(os.path.join(args.L1, 'high'))
-train_tensors_L2, test_tensors_L2, val_tensors_L2, tokenizer_L2 = load_ttd(os.path.join(args.L2, 'low'))
+train_tensors_L1, test_tensors_L1, val_tensors_L1, tokenizer_L1 = load_ttd_files(os.path.join(args.L1, 'high'))
+train_tensors_L2, test_tensors_L2, val_tensors_L2, tokenizer_L2 = load_ttd_files(os.path.join(args.L2, 'low'))
 
 # Max length is a tuple: (input, target, tag)
-max_length_L1 = (max(train_tensors_L1[0].shape[1], dev_tensors_L1[0].shape[1]), \
-                 max(train_tensors_L1[1].shape[1], dev_tensors_L1[1].shape[1]), \
-                 max(train_tensors_L1[2].shape[1], dev_tensors_L1[2].shape[1]))
-max_length_L2 = (max(train_tensors_L2[0].shape[1], dev_tensors_L2[0].shape[1]), \
-                 max(train_tensors_L2[1].shape[1], dev_tensors_L2[1].shape[1]), \
-                 max(train_tensors_L2[2].shape[1], dev_tensors_L2[2].shape[1]))
+max_length_L1 = (max(train_tensors_L1[0].shape[1], val_tensors_L1[0].shape[1]), \
+                 max(train_tensors_L1[1].shape[1], val_tensors_L1[1].shape[1]), \
+                 max(train_tensors_L1[2].shape[1], val_tensors_L1[2].shape[1]))
+max_length_L2 = (max(train_tensors_L2[0].shape[1], val_tensors_L2[0].shape[1]), \
+                 max(train_tensors_L2[1].shape[1], val_tensors_L2[1].shape[1]), \
+                 max(train_tensors_L2[2].shape[1], val_tensors_L2[2].shape[1]))
 
 ## Show length
 print('L1', len(train_tensors_L1[0]), len(train_tensors_L1[1]), 
     len(test_tensors_L1[0]), len(test_tensors_L1[1]))
 print('L2', len(train_tensors_L2[0]), len(train_tensors_L2[1]), 
-    len(dev_tensors_L1[0]), len(dev_tensors_L1[1]))
+    len(val_tensors_L1[0]), len(val_tensors_L1[1]))
 logger.debug('L1 training (input, target) tensor %d %d' % (
     len(train_tensors_L1[0]), len(train_tensors_L1[1])))
 logger.debug('L1 validating (input, target) tensor %d %d' % (
-    len(dev_tensors_L1[0]), len(dev_tensors_L1[1])))
+    len(val_tensors_L1[0]), len(val_tensors_L1[1])))
 logger.debug('L2 training (input, target) tensor %d %d' % (
     len(train_tensors_L2[0]), len(train_tensors_L2[1])))
 logger.debug('L2 validating (input, target) tensor %d %d' % (
-    len(dev_tensors_L2[0]), len(dev_tensors_L2[1])))
+    len(val_tensors_L2[0]), len(val_tensors_L2[1])))
 
 vocab_size_L1, vocab_tag_size_L1 = len(tokenizer_L1[0].word_index)+2, len(tokenizer_L1[1].word_index)+2
 vocab_size_L2, vocab_tag_size_L2 = len(tokenizer_L2[0].word_index)+2, len(tokenizer_L2[1].word_index)+2
@@ -142,35 +138,38 @@ copy_train_tensors_L2 = create_copy_dataset_from_tensors(*train_tensors_L2, copy
 copy_val_tensors_L2 = create_copy_dataset_from_tensors(*val_tensors_L2, copy_tag=copy_tag)
 
 copy_train_dataset_L1 = tf.data.Dataset.from_tensor_slices(
-                            copy_train_tensors_L1).shuffle(copy_train_tensors_L1.shape[0])
+                            copy_train_tensors_L1).shuffle(len(copy_train_tensors_L1[0]))
 copy_val_dataset_L1 = tf.data.Dataset.from_tensor_slices(
-                            copy_val_tensors_L1).shuffle(copy_val_tensors_L1.shape[0])
+                            copy_val_tensors_L1).shuffle(len(copy_val_tensors_L1[0]))
 copy_train_dataset_L2 = tf.data.Dataset.from_tensor_slices(
-                            copy_train_tensors_L2).shuffle(copy_train_tensors_L2.shape[0])
+                            copy_train_tensors_L2).shuffle(len(copy_train_tensors_L2[0]))
 copy_val_dataset_L2 = tf.data.Dataset.from_tensor_slices(
-                            copy_val_tensors_L2).shuffle(copy_val_tensors_L2.shape[0])
+                            copy_val_tensors_L2).shuffle(len(copy_val_tensors_L2[0]))
 
 # Create main phase datasets
 train_dataset_L1 = tf.data.Dataset.from_tensor_slices(
-                    train_tensors_L1).shuffle(train_tensors_L1[0].shape[0])
+                    train_tensors_L1).shuffle(len(train_tensors_L1[0]))
 val_dataset_L1 = tf.data.Dataset.from_tensor_slices(
-                    val_tensors_L1).shuffle(val_tensors_L1[0].shape[0])
+                    val_tensors_L1).shuffle(len(val_tensors_L1[0]))
 train_dataset_L2 = tf.data.Dataset.from_tensor_slices(
-                    train_tensors_L2).shuffle(train_tensors_L2[0].shape[0])
+                    train_tensors_L2).shuffle(len(train_tensors_L2[0]))
 val_dataset_L2 = tf.data.Dataset.from_tensor_slices(
-                    val_tensors_L2).shuffle(val_tensors_L2[0].shape[0])
+                    val_tensors_L2).shuffle(len(val_tensors_L2[0]))
 
 # Create the modules of the model
 char_embedding_L1 = Embedding(vocab_size_L1, embedding_dim)
 char_embedding_L2 = Embedding(vocab_size_L2, embedding_dim)
 
-char_encoder = Encoder(units, rate=args.dropout)
-tag_encoder = TransformerEncoder(num_layers=1, d_model=units, num_heads=1, 
-                                 dff=256, rate=args.dropout)
-decoder = Decoder(embedding_dim, units, inc_tags=inc_tags, rate=args.dropout)
+tag_embedding_L1 = Embedding(vocab_tag_size_L1, embedding_dim)
+tag_embedding_L2 = Embedding(vocab_tag_size_L2, embedding_dim)
 
-fc_L1 = Dense(vocab_size_L1, activation='swish')
-fc_L2 = Dense(vocab_size_L2, activation='swish')
+char_encoder = Encoder(units, rate=args.dropout)
+tag_encoder = TransformerEncoder(num_layers=1, d_model=embedding_dim,
+                                 num_heads=1, dff=units, rate=args.dropout)
+decoder = Decoder(units, rate=args.dropout)
+
+fc_L1 = Dense(vocab_size_L1, activation=swish)
+fc_L2 = Dense(vocab_size_L2, activation=swish)
 
 # Set up optimizers for phases
 optimizer_P1 = tf.keras.optimizers.Adam(lr[0])
@@ -181,208 +180,109 @@ optimizer_P4 = tf.keras.optimizers.Adam(lr[3])
 # Save all settings
 options = {
     'num_samples': num_samples,
-    'epochs': EPOCHS,
+    'epochs': epochs,
     'units': units,
     'embedding': embedding_dim,
-    'batch_size': BATCH_SIZE,
-    'lr': args.lr,
+    'batch_size': batch_size,
+    'lr': lr,
     'dropout': args.dropout,
     'L1': args.L1,
-    'L2': args.L2
+    'L2': args.L2,
     'out_dir': OUT_DIR,
     'mask': mask,
-    'copy_threshold': args.copy_threshold,
     'tag_encoder': {
         'num_layers': 1, 
-        'units': units, 
+        'd_model': units, 
         'num_heads': 1,
-        'dff': 256}
+        'dff': embedding_dim
+    }
 }
 json.dump(options, open(os.path.join(OUT_DIR, 'options.json'), 'w'))
 
-@tf.function
-def loss_function(real, pred):
-    loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
-                        from_logits=True, reduction='none')
-
-    mask = tf.math.logical_not(tf.math.equal(real, 0))
-    loss_ = loss_object(real, pred)
-
-    mask = tf.cast(mask, dtype=loss_.dtype)
-    loss_ *= mask
-
-    return tf.reduce_mean(loss_)
-
-@tf.function
-def train_step(batch_dataset, embedder, dense_fc, start_token, optimizer, mask=0,
-               mode='P1', training=True, return_outputs=False, return_attention_plots=False):
-    loss = 0
-    count = [True for _ in range(inputs.shape[0])]
-    if return_outputs and not training:
-        outputs = [[] for _ in range(inputs.shape[0])]
-    if return_attention_plots and not training:
-        char_attention_plot = np.zeros((targets.shape[1], inputs.shape[1]))
-        tag_attention_plot = np.zeros((targets.shape[1], tags.shape[1]))
-
-    inputs, targets, tags = batch_dataset
-
-    with tf.GradientTape() as tape:
-        embedded_inputs = embedder(inputs)
-        enc_output, enc_hidden, enc_c = encoder(embedded_inputs,
-                                                training=training)
-
-        tag_mask = create_padding_mask(tag_inp, 'transformer')
-        tag_output = tag_encoder(tag_inp, training=training, mask=tag_mask)
-
-        dec_states = (enc_hidden, enc_c)
-        dec_inputs = tf.expand_dims([start_token] * BATCH_SIZE, 1)
-        
-        if mask == 1:
-            enc_mask = create_padding_mask(inp, 'structure')
-            tag_mask = create_padding_mask(tag_inp, 'luong')
-        else:
-            enc_mask, tag_mask = None, None
-        
-        decoder.reset()
-        for t in range(1, targ.shape[1]):
-            embedded_inputs = embedder(dec_inputs)
-            outputs, dec_states, attention_weights = decoder(embedded_inputs,
-                                                            dec_states,
-                                                            enc_output,
-                                                            tag_output,
-                                                            enc_mask=enc_mask,
-                                                            tag_mask=tag_mask,
-                                                            training=training)
-            predictions = dense_fc(outputs)
-
-            loss += loss_function(targ[:, t], predictions)
-
-            if training:
-                if mode in ['P1', 'P2', 'P3']:
-                    # using teacher forcing
-                    dec_input = tf.expand_dims(targ[:, t], 1)
-                elif mode in ['P4']:
-                    # using scheduled sampling
-                    if random.random() > 0.5:
-                        dec_input = tf.expand_dims(targ[:, t], 1)
-                    else:
-                        dec_input = tf.argmax(predictions, axis=-1, output_type=tf.int32)
-                        dec_input = tf.expand_dims(dec_input, 1)
-            else:
-                # calculating accuracy when running validation
-                dec_input = tf.argmax(predictions, axis=-1, output_type=tf.int32)
-                
-                mask = tf.math.equal(targ[:, t], 0)
-                accuracy = (targ[:, t] == dec_input)
-                accuracy = tf.math.logical_or(accuracy, mask)
-                count = tf.math.logical_and(count, accuracy)
-                
-                dec_input = tf.expand_dims(dec_input, 1)
-                if return_outputs:
-                    outputs = tf.concat([outputs, dec_input], axis=-1)
-                if return_attention_plots:
-                    buff = tf.reshape(attention_weights[0], (-1, ))
-                    char_attention_plot[t] = buff.numpy()
-
-                    buff = tf.reshape(attention_weights[1], (-1, ))
-                    tag_attention_plot[t] = buff.numpy()
-            
-    count = tf.reduce_sum(tf.cast(count, dtype='int32'))
-
-    batch_loss = (loss / int(targ.shape[1]))
-
-    if training:
-        if mode == 'P1':
-            variables = encoder.trainable_variables + decoder.trainable_variables + \
-                        embedder.trainable_variables + dense_fc.trainable_variables
-        elif mode == 'P2':
-            variables = embedder.trainable_variables + dense_fc.trainable_variables
-        elif mode == 'P3':
-            variables = encoder.trainable_variables + decoder.trainable_variables + \
-                        dense_fc.trainable_variables
-        elif mode == 'P4':
-            variables = dense_fc.trainable_variables
-
-        gradients = tape.gradient(loss, variables)
-
-        optimizer.apply_gradients(zip(gradients, variables))
-
-    if return_attention_plots and return_outputs:
-        return batch_loss, count, outputs, (char_attention_plot, tag_attention_plot)
-    elif return_attention_plots:
-        return batch_loss, count, (char_attention_plot, tag_attention_plot)
-    elif return_outputs:
-        return batch_loss, count, outputs
-    else:
-        return batch_loss, count
-
-@tf.function
-def run(train_dataset, val_dataset, embedder, dense_fc, start_token,
-        optimizer, mode='P1', mask=0, batch_size=10):
-    # Batch the train and val datasets
-    train_batch_dataset = train_dataset.batch(batch_size, drop_remainder=True)
-    val_batch_dataset = val_dataset.batch(batch_size, drop_remainder=True)
-
-    total_loss = 0
-    
-    for (batch, train_batch) in enumerate(train_batch_dataset):
-        batch_loss, _ = train_step(train_batch,
-                                   embedder,
-                                   dense_fc,
-                                   start_token,
-                                   optimizer,
-                                   mask=mask,
-                                   mode=mode,
-                                   training=True)
-        total_loss += batch_loss
-
-        if batch % 100 == 0:
-            logger.debug('{} Epoch {} Batch {} Loss {:.4f}'.format(
-                                                    mode
-                                                    int(checkpoint.step),
-                                                    batch,
-                                                    batch_loss.numpy()))
-    total_loss /= batch
-    
-    # Calculate validation accuracy
-    val_total_loss = 0
-    val_total_accuracy = 0
-
-    for (batch, val_batch) in enumerate(val_batch_dataset):
-        batch_loss, batch_accuracy = train_step(val_batch,
-                                                embedder,
-                                                dense_fc,
-                                                start_token,
-                                                optimizer,
-                                                mask=mask,
-                                                mode=mode,
-                                                training=False)
-        val_total_loss += batch_loss
-        val_total_accuracy += batch_accuracy
-    
-    val_total_loss /= batch
-    val_total_accuracy /= batch * batch_size
-    
-    return total_loss, val_total_loss, val_total_accuracy
+train_step = TrainStep(char_encoder, tag_encoder, decoder)
+run = Run(train_step)
+# @tf.function
 
 def plot_wrapper(inp, out, plots, directory, fname, tokenizer):
-    inp, out = next(iter(inp)), next(iter(out))
+    # inp is a batch_size 1 dataset
+    # out is a batch_size 1 output
+    char_plot, tag_plot = plots[0][0], plots[1][0]
+    char_input, tag_input, output = inp[0].numpy(), inp[1].numpy(), out.numpy()
 
-    char_input = tokenizer[0].sequences_to_texts(inp[0][0])
-    tag_input = tokenizer[0].sequences_to_texts(inp[1])
-    output = tokenizer[0].sequences_to_texts(out)
+    char_input = tokenizer[0].sequences_to_texts(char_input)
+    tag_input = tokenizer[0].sequences_to_texts(tag_input)
+    output = tokenizer[0].sequences_to_texts(output)
 
-    char_input = char_input[::2]
-    output = output[:output.find('>')]
+    char_input = char_input[0][::2]
+    tag_input = tag_input[0]
+    output = output[0][:output[0].find('>')]
 
-    plot_attention(plots[0][:len(output), :len(char_input)],
+    plot_attention(char_plot[:len(output), :len(char_input)],
                    [x for x in char_input], [x for x in output],
                    os.path.join(directory, fname + '-enc.png'))
-    plot_attention(plots[1][:len(output), :len(tag_input)],
+    plot_attention(tag_plot[:len(output), :len(tag_input)],
                    [x for x in tag_input], [x for x in output],
                    os.path.join(directory, fname + '-tag.png'))
 
+def test_dump(fname):
+    test_dataset_L2 = tf.data.Dataset.from_tensor_slices(test_tensors_L2)
+
+    ckpt_dict = {
+        'step': tf.Variable(0),
+        'optimizer': optimizer_P4,
+        'char_encoder': char_encoder,
+        'tag_encoder': tag_encoder,
+        'decoder': decoder,
+        'char_embedding': char_embedding_L2,
+        'tag_embedding': tag_embedding_L2,
+        'fc': fc_L2
+    }
+    start_token = tokenizer[0].word_index['<']
+
+    train_step.reset()
+
+    with open(os.path.join(OUT_DIR, '%s.csv' % (fname)), 'w') as o:
+        total_accuracy = 0
+        outputs = [[0 for _ in range(test_tensors_L2[1].shape[1])]]
+        for (batch, batch_dataset) in enumerate(test_dataset_L2.batch(10, drop_remainder=True)):
+            _, accuracy, _outputs = train_step(batch_dataset,
+                                       ckpt_dict['char_embedding'],
+                                       ckpt_dict['tag_embedding'],
+                                       ckpt_dict['fc'],
+                                       start_token,
+                                       ckpt_dict['optimizer'],
+                                       mode=mode,
+                                       training=False,
+                                       mask=mask,
+                                       return_outputs=True)
+            total_accuracy += accuracy
+            outputs = np.concatenate([outputs, _outputs.numpy()], axis=0)
+
+        outputs = tokenizer_L2[0].sequences_to_texts(outputs)
+        
+        for query, expected, output, tag in zip(
+                    test_tensors_L2[0], test_tensors_L2[1], outputs[1:], test_tensors_L2[2]):
+            
+            query = tokenizer_L2[0].sequences_to_texts([query])[0][::2]
+            expected = tokenizer_L2[0].sequences_to_texts([expected])[0][::2]
+            tag = tokenizer_L2[1].sequences_to_texts([tag])[0]
+            output = output[:output.find(END_TOK):2]
+            
+            print(query, expected, output, tag, sep='\t', file=o)
+        print(total_accuracy.numpy(), 16*batch, file=o)
+
+##################################################################
 # Phase 1
+##################################################################
+mode = 'P1'
+val_dataset = copy_val_dataset_L1
+train_dataset = copy_train_dataset_L1
+tokenizer = tokenizer_L1
+_epochs = epochs[0]
+_batch_size = batch_size[0]
+
+train_step.reset()
+
 # Set up checkpoints for phase 1
 ckpt_dict = {
     'step': tf.Variable(0),
@@ -390,33 +290,37 @@ ckpt_dict = {
     'char_encoder': char_encoder,
     'tag_encoder': tag_encoder,
     'decoder': decoder,
-    'embedding': char_embedding_L1,
+    'char_embedding': char_embedding_L1,
+    'tag_embedding': tag_embedding_L1,
     'fc': fc_L1
 }
 
 checkpoint = tf.train.Checkpoint(**ckpt_dict)
-checkpoint_manager = create_checkpoint_manager(checkpoint, os.path.join(OUT_DIR, 'ckpt_p1'))
+checkpoint_manager = create_checkpoint_manager(checkpoint, os.path.join(OUT_DIR, 'ckpt_%s' % (mode)))
 
-metrics = []
-sample = copy_val_dataset_L1.take(1)
-start_token = tokenizer_L1[0].word_index['<']
-mode = 'P1'
+metrics = [(-1, 0, 0, 0)]
+sample = next(iter(val_dataset.take(1).batch(1)))
+start_token = tokenizer[0].word_index['<']
+os.mkdir(os.path.join(OUT_DIR, mode))
+
+reduceLR = ReduceLRonPlateau(ckpt_dict['optimizer'], patience=5, cooldown=10)
+earlyStop = EarlyStopping(patience=10, min_delta=0.)
 
 # Run phase 1
-logger.info('Phase P1')
-for epoch in range(20):
+logger.info('Phase %s' % (mode))
+for epoch in range(_epochs):
     start = time.time()
 
-    loss, val_loss, val_accuracy = run(copy_train_dataset_L1,
-                                       copy_val_dataset_L1,
-                                       char_embedding_L1,
-                                       fc_L1,
+    loss, val_loss, val_accuracy = run(train_dataset,
+                                       val_dataset,
+                                       ckpt_dict['char_embedding'],
+                                       ckpt_dict['tag_embedding'],
+                                       ckpt_dict['fc'],
                                        start_token,
-                                       optimizer_1,
+                                       ckpt_dict['optimizer'],
                                        mode=mode,
                                        mask=mask,
-                                       batch_size=batch_size[0])
-    metrics.append((epoch, loss, val_loss, val_accuracy))
+                                       batch_size=_batch_size)
 
     # Update checkpoint step variable and save
     checkpoint.step.assign_add(1)
@@ -425,32 +329,36 @@ for epoch in range(20):
 
     # Dump attention plots
     if epoch % 5 == 0:
-        random_sample = copy_val_dataset_L1.take(1)
-        _, _, _, output, plot = train_step(random_sample.batch(1),
-                                   char_embedding_L1,
-                                   fc_L1,
+        random_sample = next(iter(val_dataset.take(1).batch(1)))
+        _, _, output, plots = train_step(
+                                   random_sample,
+                                   ckpt_dict['char_embedding'],
+                                   ckpt_dict['tag_embedding'],
+                                   ckpt_dict['fc'],
                                    start_token,
-                                   optimizer_1,
+                                   ckpt_dict['optimizer'],
                                    mode=mode,
                                    training=False,
                                    mask=mask,
                                    return_outputs=True,
                                    return_attention_plots=True)
-        
-        plot_wrapper(random_sample, output, plot, os.path.join(OUT_DIR, mode), 'r'+str(epoch), tokenizer_L1)
 
-        _, _, _, output, plot = train_step(sample.batch(1),
-                                   char_embedding_L1,
-                                   fc_L1,
+        plot_wrapper(random_sample, output, plots, os.path.join(OUT_DIR, mode), 'r'+str(epoch), tokenizer)
+
+        _, _, output, plots = train_step(
+                                   sample,
+                                   ckpt_dict['char_embedding'],
+                                   ckpt_dict['tag_embedding'],
+                                   ckpt_dict['fc'],
                                    start_token,
-                                   optimizer_1,
+                                   ckpt_dict['optimizer'],
                                    mode=mode,
                                    training=False,
                                    mask=mask,
                                    return_outputs=True,
                                    return_attention_plots=True)
-        
-        plot_wrapper(sample, output, plot, os.path.join(OUT_DIR, mode), str(epoch), tokenizer_L1)
+
+        plot_wrapper(sample, output, plots, os.path.join(OUT_DIR, mode), str(epoch), tokenizer)
 
     print('{}: Epoch {} Loss {:.4f} Validation {:.4f} Validation accuracy {}'.format(
             mode, epoch+1, loss, val_loss, val_accuracy))
@@ -458,52 +366,357 @@ for epoch in range(20):
             mode, epoch+1, loss, val_loss, val_accuracy))
 
     print('Time taken for 1 epoch {} sec'.format(time.time() - start))
+    metrics.append((epoch, loss, val_loss, val_accuracy))
     
-    if val_accuracy > accuracy[-1]:
+    if val_accuracy > metrics[-2][3]:
         checkpoint_manager['accuracy'].save()
 
-    if total_accuracy >= args.copy_threshold:
-        print('Successful. Phase %s over' % (mode))
-        logger.info('Phase {} finished with accuracy {}'.format(mode, val_accuracy))
+    if reduceLR(metrics[-1][1]):
+        logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
+    if earlyStop(metrics[-1][1]):
+        print('Early stopping callback. Breaking training')
+        logger.info('Main phase early stopping')
         break
 
 checkpoint_manager['latest'].save()
 np.savetxt("loss_%s.csv" % (mode), metrics, delimiter=",", header='epochs,loss,val_loss,accuracy')
 
-# with open(os.path.join(DATA_DIR, 'test.csv'), 'r') as f, \
-#      open(os.path.join(OUT_DIR, 'test.csv'), 'w') as o:
-#     corr = 0
-#     faul = 0
-#     if use_ptv:
-#         ptvs = load_ptv(os.path.join(DATA_DIR, 'ptv-test-%d.npy' % (ptv_dim)))
-#     if args.test_img:
-#         os.makedirs(os.path.join(OUT_DIR, 'pictures'))
-#     for i, line in enumerate(f):
-#         if i >= min(2000, num_samples):
-#             break
-#         line = line.strip()
-#         tag, word, lemma = line.split('\t')
-#         ptv = ptvs[i] if use_ptv else None
-#         out, inp, *at = evaluate(word, tag, inc_tags=inc_tags, mask=mask_level,
-#                             ptv=ptv, cnst_tag=cnst_tag, attention_output=args.test_img)
-#         if args.test_img and inc_tags:
-#             plot_attention(
-#                 at[0][1][:len(out), :len(inp[1].split())+1], 
-#                 inp[1].split() + ['blank'], [x for x in out], 
-#                 os.path.join(OUT_DIR, 'pictures', str(i) + '-tag.png'))
-#         out = out[:-1]
-#         if inc_tags:
-#             word_inp = inp[0][1:-1]
-#             tag_inp = inp[1]
-#             output = '{}\t{}\t{}\t{}\t{}'.format(word, lemma, out, word_inp, tag_inp)
-#         else:
-#             word_inp = inp[1:-1]
-#             output = '{}\t{}\t{}\t{}'.format(word, lemma, out, word_inp)
-#         if clip_length:
-#             lemma_clipped = lemma[-clip_length]
-#         else:
-#             lemma_clipped = lemma
-#         corr += (out == lemma_clipped)
-#         faul += (out != lemma_clipped)
-#         print(output, file=o)
-#     print('{} {}'.format(corr, faul), file=o)
+##################################################################
+# Phase 2
+##################################################################
+mode = 'P2'
+val_dataset = copy_val_dataset_L2
+train_dataset = copy_train_dataset_L2
+tokenizer = tokenizer_L2
+_epochs = epochs[1]
+_batch_size = batch_size[1]
+
+train_step.reset()
+
+# Set up checkpoints for phase 2
+ckpt_dict = {
+    'step': tf.Variable(0),
+    'optimizer': optimizer_P2,
+    'char_encoder': char_encoder,
+    'tag_encoder': tag_encoder,
+    'decoder': decoder,
+    'char_embedding': char_embedding_L2,
+    'tag_embedding': tag_embedding_L2,
+    'fc': fc_L2
+}
+
+checkpoint = tf.train.Checkpoint(**ckpt_dict)
+checkpoint_manager = create_checkpoint_manager(checkpoint, os.path.join(OUT_DIR, 'ckpt_%s' % (mode)))
+
+metrics = [(-1, 0, 0, 0)]
+sample = next(iter(val_dataset.take(1).batch(1)))
+start_token = tokenizer[0].word_index['<']
+os.mkdir(os.path.join(OUT_DIR, mode))
+
+reduceLR = ReduceLRonPlateau(ckpt_dict['optimizer'], patience=5, cooldown=10)
+earlyStop = EarlyStopping(patience=10, min_delta=0.)
+
+# Run phase 2
+logger.info('Phase %s' % (mode))
+for epoch in range(_epochs):
+    start = time.time()
+
+    loss, val_loss, val_accuracy = run(train_dataset,
+                                       val_dataset,
+                                       ckpt_dict['char_embedding'],
+                                       ckpt_dict['tag_embedding'],
+                                       ckpt_dict['fc'],
+                                       start_token,
+                                       ckpt_dict['optimizer'],
+                                       mode=mode,
+                                       mask=mask,
+                                       batch_size=_batch_size)
+
+    # Update checkpoint step variable and save
+    checkpoint.step.assign_add(1)
+    if epoch % 10 == 0:
+        checkpoint_manager['latest'].save()
+
+    # Dump attention plots
+    if epoch % 5 == 0:
+        random_sample = next(iter(val_dataset.take(1).batch(1)))
+        _, _, output, plots = train_step(
+                                   random_sample,
+                                   ckpt_dict['char_embedding'],
+                                   ckpt_dict['tag_embedding'],
+                                   ckpt_dict['fc'],
+                                   start_token,
+                                   ckpt_dict['optimizer'],
+                                   mode=mode,
+                                   training=False,
+                                   mask=mask,
+                                   return_outputs=True,
+                                   return_attention_plots=True)
+
+        plot_wrapper(random_sample, output, plots, os.path.join(OUT_DIR, mode), 'r'+str(epoch), tokenizer)
+
+        _, _, output, plots = train_step(
+                                   sample,
+                                   ckpt_dict['char_embedding'],
+                                   ckpt_dict['tag_embedding'],
+                                   ckpt_dict['fc'],
+                                   start_token,
+                                   ckpt_dict['optimizer'],
+                                   mode=mode,
+                                   training=False,
+                                   mask=mask,
+                                   return_outputs=True,
+                                   return_attention_plots=True)
+
+        plot_wrapper(sample, output, plots, os.path.join(OUT_DIR, mode), str(epoch), tokenizer)
+
+    print('{}: Epoch {} Loss {:.4f} Validation {:.4f} Validation accuracy {}'.format(
+            mode, epoch+1, loss, val_loss, val_accuracy))
+    logger.info('{}: Epoch {} Loss {:.4f} Validation {:.4f} Validation Accuracy {}'.format(
+            mode, epoch+1, loss, val_loss, val_accuracy))
+
+    print('Time taken for 1 epoch {} sec'.format(time.time() - start))
+    metrics.append((epoch, loss, val_loss, val_accuracy))
+    
+    if val_accuracy > metrics[-2][3]:
+        checkpoint_manager['accuracy'].save()
+
+    if reduceLR(metrics[-1][1]):
+        logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
+    if earlyStop(metrics[-1][1]):
+        print('Early stopping callback. Breaking training')
+        logger.info('Main phase early stopping')
+        break
+
+checkpoint_manager['latest'].save()
+np.savetxt("loss_%s.csv" % (mode), metrics, delimiter=",", header='epochs,loss,val_loss,accuracy')
+
+##################################################################
+# Phase 3
+##################################################################
+mode = 'P3'
+val_dataset = val_dataset_L1
+train_dataset = train_dataset_L1
+tokenizer = tokenizer_L1
+_epochs = epochs[2]
+_batch_size = batch_size[2]
+
+train_step.reset()
+
+# Set up checkpoints for phase 3
+ckpt_dict = {
+    'step': tf.Variable(0),
+    'optimizer': optimizer_P3,
+    'char_encoder': char_encoder,
+    'tag_encoder': tag_encoder,
+    'decoder': decoder,
+    'char_embedding': char_embedding_L1,
+    'tag_embedding': tag_embedding_L1,
+    'fc': fc_L1
+}
+
+checkpoint = tf.train.Checkpoint(**ckpt_dict)
+checkpoint_manager = create_checkpoint_manager(checkpoint, os.path.join(OUT_DIR, 'ckpt_%s' % (mode)))
+
+metrics = [(-1, 0, 0, 0)]
+sample = next(iter(val_dataset.take(1).batch(1)))
+start_token = tokenizer[0].word_index['<']
+os.mkdir(os.path.join(OUT_DIR, mode))
+
+reduceLR = ReduceLRonPlateau(ckpt_dict['optimizer'], patience=3, cooldown=6)
+earlyStop = EarlyStopping(patience=10, min_delta=0.)
+
+# Run phase 3
+logger.info('Phase %s' % (mode))
+for epoch in range(_epochs):
+    start = time.time()
+
+    loss, val_loss, val_accuracy = run(train_dataset,
+                                       val_dataset,
+                                       ckpt_dict['char_embedding'],
+                                       ckpt_dict['tag_embedding'],
+                                       ckpt_dict['fc'],
+                                       start_token,
+                                       ckpt_dict['optimizer'],
+                                       mode=mode,
+                                       mask=mask,
+                                       batch_size=_batch_size)
+
+    # Update checkpoint step variable and save
+    checkpoint.step.assign_add(1)
+    if epoch % 10 == 0:
+        checkpoint_manager['latest'].save()
+
+    # Dump attention plots
+    if epoch % 5 == 0:
+        random_sample = next(iter(val_dataset.take(1).batch(1)))
+        _, _, output, plots = train_step(
+                                   random_sample,
+                                   ckpt_dict['char_embedding'],
+                                   ckpt_dict['tag_embedding'],
+                                   ckpt_dict['fc'],
+                                   start_token,
+                                   ckpt_dict['optimizer'],
+                                   mode=mode,
+                                   training=False,
+                                   mask=mask,
+                                   return_outputs=True,
+                                   return_attention_plots=True)
+
+        plot_wrapper(random_sample, output, plots, os.path.join(OUT_DIR, mode), 'r'+str(epoch), tokenizer)
+
+        _, _, output, plots = train_step(
+                                   sample,
+                                   ckpt_dict['char_embedding'],
+                                   ckpt_dict['tag_embedding'],
+                                   ckpt_dict['fc'],
+                                   start_token,
+                                   ckpt_dict['optimizer'],
+                                   mode=mode,
+                                   training=False,
+                                   mask=mask,
+                                   return_outputs=True,
+                                   return_attention_plots=True)
+
+        plot_wrapper(sample, output, plots, os.path.join(OUT_DIR, mode), str(epoch), tokenizer)
+
+    print('{}: Epoch {} Loss {:.4f} Validation {:.4f} Validation accuracy {}'.format(
+            mode, epoch+1, loss, val_loss, val_accuracy))
+    logger.info('{}: Epoch {} Loss {:.4f} Validation {:.4f} Validation Accuracy {}'.format(
+            mode, epoch+1, loss, val_loss, val_accuracy))
+
+    print('Time taken for 1 epoch {} sec'.format(time.time() - start))
+    metrics.append((epoch, loss, val_loss, val_accuracy))
+    
+    if val_accuracy > metrics[-2][3]:
+        checkpoint_manager['accuracy'].save()
+
+    if reduceLR(metrics[-1][1]):
+        logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
+    if earlyStop(metrics[-1][1]):
+        print('Early stopping callback. Breaking training')
+        logger.info('Main phase early stopping')
+        break
+
+checkpoint_manager['latest'].save()
+np.savetxt("loss_%s.csv" % (mode), metrics, delimiter=",", header='epochs,loss,val_loss,accuracy')
+
+#######         #######
+checkpoint.restore(checkpoint_manager['validation'].latest)
+test_dump('p3')
+#######         #######
+
+##################################################################
+# Phase 4
+##################################################################
+mode = 'P4'
+val_dataset = val_dataset_L2
+train_dataset = train_dataset_L2
+tokenizer = tokenizer_L2
+_epochs = epochs[3]
+_batch_size = batch_size[3]
+
+train_step.reset()
+
+# Set up checkpoints for phase 4
+ckpt_dict = {
+    'step': tf.Variable(0),
+    'optimizer': optimizer_P4,
+    'char_encoder': char_encoder,
+    'tag_encoder': tag_encoder,
+    'decoder': decoder,
+    'char_embedding': char_embedding_L2,
+    'tag_embedding': tag_embedding_L2,
+    'fc': fc_L2
+}
+
+checkpoint = tf.train.Checkpoint(**ckpt_dict)
+checkpoint_manager = create_checkpoint_manager(checkpoint, os.path.join(OUT_DIR, 'ckpt_%s' % (mode)))
+
+metrics = [(-1, 0, 0, 0)]
+sample = next(iter(val_dataset.take(1).batch(1)))
+start_token = tokenizer[0].word_index['<']
+os.mkdir(os.path.join(OUT_DIR, mode))
+
+reduceLR = ReduceLRonPlateau(ckpt_dict['optimizer'], patience=3, cooldown=6)
+earlyStop = EarlyStopping(patience=10, min_delta=0.)
+
+# Run phase 4
+logger.info('Phase %s' % (mode))
+for epoch in range(_epochs):
+    start = time.time()
+
+    loss, val_loss, val_accuracy = run(train_dataset,
+                                       val_dataset,
+                                       ckpt_dict['char_embedding'],
+                                       ckpt_dict['tag_embedding'],
+                                       ckpt_dict['fc'],
+                                       start_token,
+                                       ckpt_dict['optimizer'],
+                                       mode=mode,
+                                       mask=mask,
+                                       batch_size=_batch_size)
+
+    # Update checkpoint step variable and save
+    checkpoint.step.assign_add(1)
+    if epoch % 10 == 0:
+        checkpoint_manager['latest'].save()
+
+    # Dump attention plots
+    if epoch % 5 == 0:
+        random_sample = next(iter(val_dataset.take(1).batch(1)))
+        _, _, output, plots = train_step(
+                                   random_sample,
+                                   ckpt_dict['char_embedding'],
+                                   ckpt_dict['tag_embedding'],
+                                   ckpt_dict['fc'],
+                                   start_token,
+                                   ckpt_dict['optimizer'],
+                                   mode=mode,
+                                   training=False,
+                                   mask=mask,
+                                   return_outputs=True,
+                                   return_attention_plots=True)
+
+        plot_wrapper(random_sample, output, plots, os.path.join(OUT_DIR, mode), 'r'+str(epoch), tokenizer)
+
+        _, _, output, plots = train_step(
+                                   sample,
+                                   ckpt_dict['char_embedding'],
+                                   ckpt_dict['tag_embedding'],
+                                   ckpt_dict['fc'],
+                                   start_token,
+                                   ckpt_dict['optimizer'],
+                                   mode=mode,
+                                   training=False,
+                                   mask=mask,
+                                   return_outputs=True,
+                                   return_attention_plots=True)
+
+        plot_wrapper(sample, output, plots, os.path.join(OUT_DIR, mode), str(epoch), tokenizer)
+
+    print('{}: Epoch {} Loss {:.4f} Validation {:.4f} Validation accuracy {}'.format(
+            mode, epoch+1, loss, val_loss, val_accuracy))
+    logger.info('{}: Epoch {} Loss {:.4f} Validation {:.4f} Validation Accuracy {}'.format(
+            mode, epoch+1, loss, val_loss, val_accuracy))
+
+    print('Time taken for 1 epoch {} sec'.format(time.time() - start))
+    metrics.append((epoch, loss, val_loss, val_accuracy))
+    
+    if val_accuracy > metrics[-2][3]:
+        checkpoint_manager['accuracy'].save()
+
+    if reduceLR(metrics[-1][1]):
+        logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
+    if earlyStop(metrics[-1][1]):
+        print('Early stopping callback. Breaking training')
+        logger.info('Main phase early stopping')
+        break
+
+checkpoint_manager['latest'].save()
+np.savetxt("loss_%s.csv" % (mode), metrics, delimiter=",", header='epochs,loss,val_loss,accuracy')
+
+#######         #######
+checkpoint.restore(checkpoint_manager['validation'].latest)
+test_dump('p4')
+#######         #######

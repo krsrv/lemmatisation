@@ -51,6 +51,20 @@ class EarlyStopping():
         
         return False
 
+@tf.custom_gradient
+def swish(features):
+    # Copied from tf source
+    features = tf.convert_to_tensor(features, name="features")
+
+    def grad(dy):
+        with tf.control_dependencies([dy]):
+            sigmoid_features = tf.math.sigmoid(features)
+        activation_grad = (
+            sigmoid_features * (1.0 + features * (1.0 - sigmoid_features)))
+        return dy * activation_grad
+
+    return features * tf.math.sigmoid(features), grad
+
 class BahdanauAttention(tf.keras.layers.Layer):
     def __init__(self, units):
         super(BahdanauAttention, self).__init__()
@@ -133,6 +147,9 @@ class StructuralLuongAttention(tf.keras.layers.Layer):
         # query hidden state shape == (batch_size, hidden size)
         # values shape == (batch_size, max_len, hidden size)
         # mask shape == (batch_size, max_len, 1)
+        if mask is None:
+            mask = tf.ones((values.shape[0], values.shape[1], 1), tf.float32)
+
         max_len = mask.shape[1]
         if self.timestep == 1:
             self.previous_scores = tf.zeros(mask.shape)
@@ -283,13 +300,13 @@ class MultiHeadAttention(tf.keras.layers.Layer):
 
 def point_wise_feed_forward_network(d_model, dff):
     return tf.keras.Sequential([
-        tf.keras.layers.Dense(dff, activation='swish'),  # (batch_size, seq_len, dff)
+        tf.keras.layers.Dense(dff, activation=swish),  # (batch_size, seq_len, dff)
         tf.keras.layers.Dense(d_model)  # (batch_size, seq_len, d_model)
     ])
 
 class Embedding(tf.keras.Model):
     def __init__(self, input_dim, output_dim, rate=0.2):
-        super(Encoder, self).__init__()
+        super(Embedding, self).__init__()
         self.embedding = tf.keras.layers.Embedding(input_dim, output_dim)
         self.dropout = tf.keras.layers.Dropout(rate)
 
@@ -349,7 +366,7 @@ class SingleHeadTransformerEncoderLayer(tf.keras.layers.Layer):
 
 class TransformerEncoder(tf.keras.Model):
     def __init__(self, num_layers, d_model, num_heads, dff, cnst_tag=False, rate=0.2):
-        super(TagEncoder, self).__init__()
+        super(TransformerEncoder, self).__init__()
         
         self.d_model = d_model
         self.num_layers = num_layers

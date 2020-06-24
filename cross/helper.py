@@ -136,7 +136,7 @@ def load_dataset(path, num_examples=None, clip_length=None, tokenizer=None):
 def load_ttd_files(path, num_examples=None, clip_length=None, tokenizer=None):
     train_file = os.path.join(path, 'train.csv')
     test_file = os.path.join(path, 'test.csv')
-    val_file = os.path.join(path, 'val.csv')
+    val_file = os.path.join(path, 'dev.csv')
 
     if tokenizer is None:
         tokenizer = create_tokenizer(train_file, test_file, val_file)
@@ -188,7 +188,7 @@ def create_copy_dataset_from_tensors(input_tensor, target_tensor, tag_tensor, co
 
     return X, Y, T
 
-def create_checkpoint_manager(ckpt, path):
+def create_checkpoint_manager(checkpoint, path):
     manager = {
         'accuracy': tf.train.CheckpointManager(checkpoint,
             os.path.join(path, 'acc'), max_to_keep=1),
