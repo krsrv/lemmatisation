@@ -8,6 +8,7 @@ from  matplotlib.font_manager import FontProperties
 
 import re
 import io
+import os
 import pickle
 
 def preprocess_tags(t):
@@ -112,18 +113,6 @@ def load_ptv(path, dim=None, num_examples=None):
 def load_dataset(path, num_examples=None, clip_length=None, tokenizer=None):
     lang_tokenizer, tag_tokenizer = None, None
 
-    if tokenizer is None:
-        # Load all devanagari characters in tokenizer
-        chars = []
-        chars.append(''.join([chr(x) for x in range(ord('\u0900'),ord('\u094f'))]))
-        chars.append(''.join([chr(x) for x in range(ord('\u0958'),ord('\u096f'))]))
-        chars.append('?.,-')  # Punctuation marks
-        chars.append('<>')  # Start and end tokens
-
-        lang_tokenizer = tf.keras.preprocessing.text.Tokenizer(
-                filters='', lower=False, char_level=True)
-        lang_tokenizer.fit_on_texts(chars)
-
     tags, inp_lang, targ_lang = create_dataset(path, num_examples, clip_length)
     if tokenizer is not None:
         if len(tokenizer) == 2:
@@ -142,6 +131,23 @@ def load_dataset(path, num_examples=None, clip_length=None, tokenizer=None):
         tag_tensor, _ = tag_tokenize(tags, tag_tokenizer)
 
     return (input_tensor, target_tensor, tag_tensor), (lang_tokenizer, tag_tokenizer)
+
+# Path to directory with 'train.csv', 'dev.csv', 'test.csv'
+def load_ttd_files(path, num_examples=None, clip_length=None, tokenizer=None):
+    train_file = os.path.join(path, 'train.csv')
+    test_file = os.path.join(path, 'test.csv')
+    val_file = os.path.join(path, 'val.csv')
+
+    if tokenizer is None:
+        tokenizer = create_tokenizer(train_file, test_file, val_file)
+    train_tensors, _ = load_dataset(train_file, num_examples=num_examples, 
+                                                   clip_length=clip_length, tokenizer=tokenizer)
+    test_tensors, _ = load_dataset(test_file, num_examples=num_examples, 
+                                                 clip_length=clip_length, tokenizer=tokenizer)
+    val_tensors, _ = load_dataset(val_file, num_examples=num_examples, 
+                                               clip_length=clip_length, tokenizer=tokenizer)
+
+    return train_tensors, test_tensors, val_tensors, tokenizer
 
 def save_tokenizer(tokenizer, file_path):
     with open(file_path, 'wb') as handle:
@@ -167,6 +173,31 @@ def pad(x, y, concatenate=True):
         return np.concatenate([x, y], axis=0)
     else:
         return x, y
+
+def create_copy_dataset_from_tensors(input_tensor, target_tensor, tag_tensor, copy_tag=None):
+    assert copy_tag is not None
+    X = pad(input_tensor, target_tensor, concatenate=True)
+    Y = X[:, :]
+    
+    copy_tag_tensor = np.reshape(copy_tag, (1,1))
+    copy_tag_tensor = tf.keras.preprocessing.sequence.pad_sequences(copy_tag_tensor, 
+                                                    maxlen=tag_tensor.shape[1], 
+                                                    padding='post')
+    copy_tag_tensor = np.repeat(copy_tag_tensor, input_tensor.shape[0], axis=0)
+    T = pad(copy_tag_tensor, tag_tensor)
+
+    return X, Y, T
+
+def create_checkpoint_manager(ckpt, path):
+    manager = {
+        'accuracy': tf.train.CheckpointManager(checkpoint,
+            os.path.join(path, 'acc'), max_to_keep=1),
+        'validation': tf.train.CheckpointManager(checkpoint,
+            os.path.join(path, 'val'), max_to_keep=1),
+        'latest': tf.train.CheckpointManager(checkpoint,
+            os.path.join(path, 'latest'), max_to_keep=1)
+        }
+    return manager
 
 def convert(lang, tensor):
     for t in tensor:

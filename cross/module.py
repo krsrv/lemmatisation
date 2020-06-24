@@ -283,9 +283,31 @@ class MultiHeadAttention(tf.keras.layers.Layer):
 
 def point_wise_feed_forward_network(d_model, dff):
     return tf.keras.Sequential([
-        tf.keras.layers.Dense(dff, activation='relu'),  # (batch_size, seq_len, dff)
+        tf.keras.layers.Dense(dff, activation='swish'),  # (batch_size, seq_len, dff)
         tf.keras.layers.Dense(d_model)  # (batch_size, seq_len, d_model)
     ])
+
+class Embedding(tf.keras.Model):
+    def __init__(self, input_dim, output_dim, rate=0.2):
+        super(Encoder, self).__init__()
+        self.embedding = tf.keras.layers.Embedding(input_dim, output_dim)
+        self.dropout = tf.keras.layers.Dropout(rate)
+
+    def call(self, x, training):
+        x = self.embedding(x)
+        x = self.dropout(x, training=training)
+        return x
+
+class Dense(tf.keras.Model):
+    def __init__(self, units, activation=None, rate=0.2):
+        super(Dense, self).__init__()
+        self.fc = tf.keras.layers.Dense(units, activation=activation)
+        self.dropout = tf.keras.layers.Dropout(rate)
+
+    def call(self, x, training):
+        x = self.fc(x)
+        x = self.dropout(x, training=training)
+        return x
 
 class TransformerEncoderLayer(tf.keras.layers.Layer):
     def __init__(self, d_model, num_heads, dff, rate=0.2):
@@ -325,15 +347,14 @@ class SingleHeadTransformerEncoderLayer(tf.keras.layers.Layer):
 
         return out1
 
-class TagEncoder(tf.keras.Model):
-    def __init__(self, num_layers, d_model, num_heads, dff, input_vocab_size,
-           cnst_tag=False, rate=0.2):
+class TransformerEncoder(tf.keras.Model):
+    def __init__(self, num_layers, d_model, num_heads, dff, cnst_tag=False, rate=0.2):
         super(TagEncoder, self).__init__()
         
         self.d_model = d_model
         self.num_layers = num_layers
 
-        self.embedding = tf.keras.layers.Embedding(input_vocab_size, d_model)
+        # self.embedding = tf.keras.layers.Embedding(input_vocab_size, d_model)
 
         if num_layers == 1 and num_heads == 1:
             self.enc_layers = [SingleHeadTransformerEncoderLayer(d_model, rate)]
@@ -352,7 +373,7 @@ class TagEncoder(tf.keras.Model):
         seq_len = tf.shape(x)[1]
 
         # adding embedding and position encoding.
-        x = self.embedding(x)  # (batch_size, input_seq_len, d_model)
+        # x = self.embedding(x)  # (batch_size, input_seq_len, d_model)
         x *= tf.math.sqrt(tf.cast(self.d_model, tf.float32))
 
         x = self.dropout(x, training=training)
@@ -370,10 +391,9 @@ class TagEncoder(tf.keras.Model):
         return tag_context_vector, tag_attention_weights
 
 class Encoder(tf.keras.Model):
-    def __init__(self, vocab_size, embedding_dim, enc_units, rate=0.2):
+    def __init__(self, enc_units, rate=0.2):
         super(Encoder, self).__init__()
         self.enc_units = enc_units
-        self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
         self.lstm = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(
                                        self.enc_units,
                                        return_sequences=True,
@@ -381,7 +401,6 @@ class Encoder(tf.keras.Model):
         self.dropout = tf.keras.layers.Dropout(rate)
 
     def call(self, x, state=None, mask=None, training=True):
-        x = self.embedding(x)
         x = self.dropout(x, training=training)
 
         output, *state = self.lstm(x, initial_state=state, mask=mask)
@@ -395,15 +414,14 @@ class Encoder(tf.keras.Model):
         return [tf.zeros((batch_sz, self.enc_units)) for _ in range(4)]
 
 class Decoder(tf.keras.Model):
-    def __init__(self, vocab_size, embedding_dim, units, inc_tags=False, 
+    def __init__(self, units, inc_tags=True, 
                  use_ptv=False, cnst_tag=False, rate=0.2):
         super(Decoder, self).__init__()
         self.dec_units = units
-        self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
         self.lstm = tf.keras.layers.LSTM(2*self.dec_units,
                                        return_sequences=True,
                                        return_state=True)
-        self.fc = tf.keras.layers.Dense(vocab_size)
+        # self.fc = tf.keras.layers.Dense(vocab_size)
         self.inc_tags = inc_tags
         self.use_ptv = use_ptv
         self.cnst_tag = cnst_tag
@@ -412,7 +430,7 @@ class Decoder(tf.keras.Model):
             # used for attention
             self.enc_attention = StructuralLuongAttention(self.dec_units)
             self.dropout3 = tf.keras.layers.Dropout(rate)
-        if inc_tags:
+        elif inc_tags:
             # used for attention
             self.tag_attention = LuongAttention(2*self.dec_units)
             self.enc_attention = StructuralLuongAttention(self.dec_units)
@@ -430,11 +448,11 @@ class Decoder(tf.keras.Model):
     def reset(self):
         self.enc_attention.reset()
 
-    def call(self, x, state, enc_output, tag_vecs=None, enc_mask=None,
+    def call(self, x, state, enc_output, tag_vecs, enc_mask=None,
              tag_mask=None, training=True, ptv=None):
         # enc_output shape == (batch_size, max_length, hidden_size)
         # x shape after passing through embedding == (batch_size, 1, embedding_dim)
-        x = self.embedding(x)
+        # x = self.embedding(x)
 
         if self.cnst_tag:
             assert tag_vecs is not None
@@ -500,7 +518,8 @@ class Decoder(tf.keras.Model):
             output = tf.math.tanh(self.dropout2(self.W_ptv(output)))
 
         # output shape == (batch_size, vocab)
-        x = self.fc(output)
-        x = self.dropout1(x, training=training)
+        # x = self.fc(output)
+        # x = self.dropout1(x, training=training)
+        x = output
 
         return x, state, attention_output
