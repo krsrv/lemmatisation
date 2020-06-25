@@ -101,9 +101,9 @@ class TrainStep():
             
             self.decoder.reset()
             for t in range(1, targets.shape[1]):
-                # embedded_inputs = char_embedder(dec_input, training=training)
+                embedded_inputs = char_embedder(dec_input, training=training)
                 dec_output, dec_states, attention_weights = self.decoder(
-                                                                embedded_inputs[:,:1,:],
+                                                                embedded_inputs,
                                                                 dec_states,
                                                                 enc_output,
                                                                 tag_output,
@@ -177,13 +177,14 @@ class TrainStep():
             return batch_loss, count
 
 class Run():
-    def __init__(self, train_step):
+    def __init__(self, train_step, logger):
         # Only train_step is needed
         # The rest are for storing history (which is not used)
         self.total_loss = None
         self.val_total_loss = None
         self.val_total_accuracy = None
         self.train_step = train_step
+        self.logger = logger
 
     def __call__(self, 
                  train_dataset, 
@@ -214,13 +215,12 @@ class Run():
                                        training=True)
             self.total_loss += batch_loss
 
-            # if batch % 100 == 0:
-            #     logger.debug('{} Epoch  Batch {} Loss {:.4f}'.format(
-            #                                             mode,
-            #                                             int(checkpoint.step),
-            #                                             batch,
-            #                                             batch_loss.numpy()))
-        self.total_loss /= batch
+            if batch % 100 == 0:
+                self.logger.debug('{} Batch {} Loss {:.4f}'.format(
+                                                        mode,
+                                                        batch,
+                                                        batch_loss.numpy()))
+        self.total_loss /= (batch+1)
         
         # Calculate idation accuracy
         self.val_total_loss = 0
@@ -239,7 +239,7 @@ class Run():
             self.val_total_loss += batch_loss
             self.val_total_accuracy += batch_accuracy
         
-        self.val_total_loss /= batch
-        self.val_total_accuracy /= batch * batch_size
+        self.val_total_loss /= (batch+1)
+        self.val_total_accuracy /= (batch+1) * batch_size
         
         return self.total_loss, self.val_total_loss, self.val_total_accuracy

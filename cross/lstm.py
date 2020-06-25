@@ -15,6 +15,7 @@ import random
 import string
 import json
 import logging
+import sys
 
 from module import Encoder, Decoder, TransformerEncoder, Embedding, Dense
 from module import ReduceLRonPlateau, EarlyStopping, swish
@@ -227,12 +228,17 @@ options = {
         'd_model': units, 
         'num_heads': 1,
         'dff': embedding_dim
-    }
+    },
+    'dev_size': args.dev_size,
+    'skip': skip,
+    'load': load,
+    'load-dir': load_dir,
+    'source': sys.argv[0]
 }
 json.dump(options, open(os.path.join(OUT_DIR, 'options.json'), 'w'))
 
 train_step = TrainStep(char_encoder, tag_encoder, decoder)
-run = Run(train_step)
+run = Run(train_step, logger)
 # @tf.function
 
 def plot_wrapper(inp, out, plots, directory, fname, tokenizer):
@@ -242,12 +248,12 @@ def plot_wrapper(inp, out, plots, directory, fname, tokenizer):
     char_input, tag_input, output = inp[0].numpy(), inp[1].numpy(), out.numpy()
 
     char_input = tokenizer[0].sequences_to_texts(char_input)
-    tag_input = tokenizer[0].sequences_to_texts(tag_input)
+    tag_input = tokenizer[1].sequences_to_texts(tag_input)
     output = tokenizer[0].sequences_to_texts(output)
 
     char_input = char_input[0][::2]
-    tag_input = tag_input[0]
-    output = output[0][:output[0].find('>')]
+    tag_input = tag_input[0].split()
+    output = output[0][:output[0].find('>'):2]
 
     plot_attention(char_plot[:len(output), :len(char_input)],
                    [x for x in char_input], [x for x in output],
@@ -301,7 +307,7 @@ def test_dump(fname):
             output = output[:output.find(END_TOK):2]
             
             print(query, expected, output, tag, sep='\t', file=o)
-        print(total_accuracy.numpy(), 16*batch, file=o)
+        print(total_accuracy.numpy(), 16*(batch+1), file=o)
 
 ##################################################################
 # Phase 1
@@ -336,8 +342,8 @@ sample = next(iter(val_dataset.take(1).batch(1)))
 start_token = tokenizer[0].word_index['<']
 os.mkdir(os.path.join(OUT_DIR, mode))
 
-reduceLR = ReduceLRonPlateau(ckpt_dict['optimizer'], patience=5, cooldown=10)
-earlyStop = EarlyStopping(patience=10, min_delta=0.)
+# reduceLR = ReduceLRonPlateau(ckpt_dict['optimizer'], patience=5, cooldown=10)
+earlyStop = EarlyStopping(patience=3, min_delta=0.)
 
 if _load:
     ckpt_dir = os.path.join(load_dir, 'ckpt_%s' % (mode), 'latest')
@@ -369,7 +375,7 @@ for epoch in range(_epochs):
         checkpoint_manager['latest'].save()
 
     # Dump attention plots
-    if epoch % 5 == 0:
+    if epoch % 10 == 0:
         random_sample = next(iter(val_dataset.take(1).batch(1)))
         _, _, output, plots = train_step(
                                    random_sample,
@@ -412,15 +418,21 @@ for epoch in range(_epochs):
     if val_accuracy > metrics[-2][3]:
         checkpoint_manager['accuracy'].save()
 
-    if reduceLR(metrics[-1][1]):
-        logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
+    # if reduceLR(metrics[-1][1]):
+    #     logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
     if earlyStop(metrics[-1][1]):
         print('Early stopping callback. Breaking training')
         logger.info('Main phase early stopping')
         break
 
 checkpoint_manager['latest'].save()
-np.savetxt("loss_%s.csv" % (mode), metrics, delimiter=",", header='epochs,loss,val_loss,accuracy')
+np.savetxt(os.path.join(OUT_DIR, "loss_%s.csv" % (mode)), metrics, 
+            delimiter=",", header='epochs,loss,val_loss,accuracy')
+
+#######         #######
+if checkpoint_manager['validation'].latest_checkpoint:
+    checkpoint.restore(checkpoint_manager['validation'].latest_checkpoint)
+#######         #######
 
 ##################################################################
 # Phase 2
@@ -455,8 +467,8 @@ sample = next(iter(val_dataset.take(1).batch(1)))
 start_token = tokenizer[0].word_index['<']
 os.mkdir(os.path.join(OUT_DIR, mode))
 
-reduceLR = ReduceLRonPlateau(ckpt_dict['optimizer'], patience=5, cooldown=10)
-earlyStop = EarlyStopping(patience=10, min_delta=0.)
+# reduceLR = ReduceLRonPlateau(ckpt_dict['optimizer'], patience=4, cooldown=10)
+earlyStop = EarlyStopping(patience=5, min_delta=0.)
 
 if _load:
     ckpt_dir = os.path.join(load_dir, 'ckpt_%s' % (mode), 'latest')
@@ -488,7 +500,7 @@ for epoch in range(_epochs):
         checkpoint_manager['latest'].save()
 
     # Dump attention plots
-    if epoch % 5 == 0:
+    if epoch % 10 == 0:
         random_sample = next(iter(val_dataset.take(1).batch(1)))
         _, _, output, plots = train_step(
                                    random_sample,
@@ -531,15 +543,22 @@ for epoch in range(_epochs):
     if val_accuracy > metrics[-2][3]:
         checkpoint_manager['accuracy'].save()
 
-    if reduceLR(metrics[-1][1]):
-        logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
+    # if reduceLR(metrics[-1][1]):
+    #     logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
     if earlyStop(metrics[-1][1]):
         print('Early stopping callback. Breaking training')
         logger.info('Main phase early stopping')
         break
 
 checkpoint_manager['latest'].save()
-np.savetxt("loss_%s.csv" % (mode), metrics, delimiter=",", header='epochs,loss,val_loss,accuracy')
+np.savetxt(os.path.join(OUT_DIR, "loss_%s.csv" % (mode)), metrics, 
+            delimiter=",", header='epochs,loss,val_loss,accuracy')
+
+#######         #######
+if checkpoint_manager['validation'].latest_checkpoint:
+    checkpoint.restore(checkpoint_manager['validation'].latest_checkpoint)
+test_dump(mode)
+#######         #######
 
 ##################################################################
 # Phase 3
@@ -658,12 +677,13 @@ for epoch in range(_epochs):
         break
 
 checkpoint_manager['latest'].save()
-np.savetxt("loss_%s.csv" % (mode), metrics, delimiter=",", header='epochs,loss,val_loss,accuracy')
+np.savetxt(os.path.join(OUT_DIR, "loss_%s.csv" % (mode)), metrics, 
+            delimiter=",", header='epochs,loss,val_loss,accuracy')
 
 #######         #######
 if checkpoint_manager['validation'].latest_checkpoint:
     checkpoint.restore(checkpoint_manager['validation'].latest_checkpoint)
-test_dump('p3')
+test_dump(mode)
 #######         #######
 
 ##################################################################
@@ -783,10 +803,11 @@ for epoch in range(_epochs):
         break
 
 checkpoint_manager['latest'].save()
-np.savetxt("loss_%s.csv" % (mode), metrics, delimiter=",", header='epochs,loss,val_loss,accuracy')
+np.savetxt(os.path.join(OUT_DIR, "loss_%s.csv" % (mode)), metrics, 
+            delimiter=",", header='epochs,loss,val_loss,accuracy')
 
 #######         #######
 if checkpoint_manager['validation'].latest_checkpoint:
     checkpoint.restore(checkpoint_manager['validation'].latest_checkpoint)
-test_dump('p4')
+test_dump(mode)
 #######         #######
