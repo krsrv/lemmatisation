@@ -39,7 +39,7 @@ parser.add_argument("--batch-size", dest="batch_size", required=False,
                     help="Batch size", default='16,16,4,4',
                     type=str)
 parser.add_argument("--lr", dest="lr", required=False,
-                    help="Initial learning rate", default='1e-4,1e-4,5e-5,5e-5',
+                    help="Initial learning rate", default='1e-3,1e-3,5e-4,5e-4',
                     type=str)
 parser.add_argument("--dropout", dest="dropout", required=False,
                     help="Dropout rate", default=0.2,
@@ -54,7 +54,44 @@ parser.add_argument("--out-dir", dest="out_dir", required=True,
 parser.add_argument("--mask", dest="mask", required=False,
                     help="masking level: 0 = no mask, 1 = mask to attention",
                     default=0, type=int)
+parser.add_argument("--load", dest="load", required=False,
+                    help="Which phases to pre-load",
+                    default='0,0,0,0', type=str)
+parser.add_argument("--skip", dest="skip", required=False,
+                    help="Which phases to avoid training",
+                    default='0,0,0,0', type=str)
+parser.add_argument("--load-dir", dest="load_dir", required=False,
+                    help="Directory to load from", default=None, type=str)
+parser.add_argument("--dev-size", dest="dev_size", required=False,
+                    help="Size of validation/dev set", default=None, type=int)
 args = parser.parse_args()
+
+# Start and End tokens - check in helper.py too
+START_TOK, END_TOK = '<', '>'
+
+num_samples = args.num_samples
+
+embedding_dim = args.embed_dim
+units = args.units
+mask = args.mask
+
+batch_size = list(map(int, args.batch_size.split(',')))
+lr = list(map(float, args.lr.split(',')))
+epochs = list(map(int, args.epochs.split(',')))
+load = list(map(bool, map(int, args.load.split(','))))
+skip = list(map(bool, map(int, args.skip.split(','))))
+load_dir = args.load_dir
+
+num_phases = 4
+
+# Check validity of input arguments
+assert len(batch_size) == num_phases
+assert len(lr) == num_phases
+assert len(epochs) == num_phases
+assert len(load) == num_phases
+assert len(skip) == num_phases
+if any(load):
+    assert load_dir is not None
 
 # Create new output directory
 OUT_BASE_DIR = args.out_dir
@@ -73,19 +110,6 @@ formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 hdlr.setFormatter(formatter)
 logger.addHandler(hdlr)
 logger.setLevel(logging.DEBUG)
-
-# Start and End tokens - check in helper.py too
-START_TOK, END_TOK = '<', '>'
-
-num_samples = args.num_samples
-
-embedding_dim = args.embed_dim
-units = args.units
-mask = args.mask
-
-batch_size = list(map(int, args.batch_size.split(',')))
-lr = list(map(float, args.lr.split(',')))
-epochs = list(map(int, args.epochs.split(',')))
 
 # Load data from files to variables
 # Each tensor is a tuple: (input, target, tag)
@@ -146,6 +170,10 @@ copy_train_dataset_L2 = tf.data.Dataset.from_tensor_slices(
 copy_val_dataset_L2 = tf.data.Dataset.from_tensor_slices(
                             copy_val_tensors_L2).shuffle(len(copy_val_tensors_L2[0]))
 
+if args.dev_size:
+    copy_val_dataset_L1 = copy_val_dataset_L1.take(args.dev_size)
+    copy_val_dataset_L2 = copy_val_dataset_L2.take(args.dev_size)
+
 # Create main phase datasets
 train_dataset_L1 = tf.data.Dataset.from_tensor_slices(
                     train_tensors_L1).shuffle(len(train_tensors_L1[0]))
@@ -155,6 +183,10 @@ train_dataset_L2 = tf.data.Dataset.from_tensor_slices(
                     train_tensors_L2).shuffle(len(train_tensors_L2[0]))
 val_dataset_L2 = tf.data.Dataset.from_tensor_slices(
                     val_tensors_L2).shuffle(len(val_tensors_L2[0]))
+
+if args.dev_size:
+    val_dataset_L1 = val_dataset_L1.take(args.dev_size)
+    val_dataset_L2 = val_dataset_L2.take(args.dev_size)
 
 # Create the modules of the model
 char_embedding_L1 = Embedding(vocab_size_L1, embedding_dim)
@@ -278,8 +310,9 @@ mode = 'P1'
 val_dataset = copy_val_dataset_L1
 train_dataset = copy_train_dataset_L1
 tokenizer = tokenizer_L1
-_epochs = epochs[0]
 _batch_size = batch_size[0]
+_load = load[0]
+_epochs = epochs[0] if not skip[0] else 0
 
 train_step.reset()
 
@@ -305,6 +338,14 @@ os.mkdir(os.path.join(OUT_DIR, mode))
 
 reduceLR = ReduceLRonPlateau(ckpt_dict['optimizer'], patience=5, cooldown=10)
 earlyStop = EarlyStopping(patience=10, min_delta=0.)
+
+if _load:
+    ckpt_dir = os.path.join(load_dir, 'ckpt_%s' % (mode), 'latest')
+    latest = tf.train.latest_checkpoint(ckpt_dir)
+    if latest:
+        print('{}: Restored from {}'.format(mode, latest))
+        logger.info('{}: Restored from {}'.format(mode, latest))
+        checkpoint.restore(latest)
 
 # Run phase 1
 logger.info('Phase %s' % (mode))
@@ -388,8 +429,9 @@ mode = 'P2'
 val_dataset = copy_val_dataset_L2
 train_dataset = copy_train_dataset_L2
 tokenizer = tokenizer_L2
-_epochs = epochs[1]
 _batch_size = batch_size[1]
+_load = load[1]
+_epochs = epochs[1] if not skip[1] else 0
 
 train_step.reset()
 
@@ -415,6 +457,14 @@ os.mkdir(os.path.join(OUT_DIR, mode))
 
 reduceLR = ReduceLRonPlateau(ckpt_dict['optimizer'], patience=5, cooldown=10)
 earlyStop = EarlyStopping(patience=10, min_delta=0.)
+
+if _load:
+    ckpt_dir = os.path.join(load_dir, 'ckpt_%s' % (mode), 'latest')
+    latest = tf.train.latest_checkpoint(ckpt_dir)
+    if latest:
+        print('{}: Restored from {}'.format(mode, latest))
+        logger.info('{}: Restored from {}'.format(mode, latest))
+        checkpoint.restore(latest)
 
 # Run phase 2
 logger.info('Phase %s' % (mode))
@@ -498,8 +548,9 @@ mode = 'P3'
 val_dataset = val_dataset_L1
 train_dataset = train_dataset_L1
 tokenizer = tokenizer_L1
-_epochs = epochs[2]
 _batch_size = batch_size[2]
+_load = load[2]
+_epochs = epochs[2] if not skip[2] else 0
 
 train_step.reset()
 
@@ -525,6 +576,14 @@ os.mkdir(os.path.join(OUT_DIR, mode))
 
 reduceLR = ReduceLRonPlateau(ckpt_dict['optimizer'], patience=3, cooldown=6)
 earlyStop = EarlyStopping(patience=10, min_delta=0.)
+
+if _load:
+    ckpt_dir = os.path.join(load_dir, 'ckpt_%s' % (mode), 'validation')
+    latest = tf.train.latest_checkpoint(ckpt_dir)
+    if latest:
+        print('{}: Restored from {}'.format(mode, latest))
+        logger.info('{}: Restored from {}'.format(mode, latest))
+        checkpoint.restore(latest)
 
 # Run phase 3
 logger.info('Phase %s' % (mode))
@@ -602,7 +661,8 @@ checkpoint_manager['latest'].save()
 np.savetxt("loss_%s.csv" % (mode), metrics, delimiter=",", header='epochs,loss,val_loss,accuracy')
 
 #######         #######
-checkpoint.restore(checkpoint_manager['validation'].latest)
+if checkpoint_manager['validation'].latest_checkpoint:
+    checkpoint.restore(checkpoint_manager['validation'].latest_checkpoint)
 test_dump('p3')
 #######         #######
 
@@ -613,8 +673,9 @@ mode = 'P4'
 val_dataset = val_dataset_L2
 train_dataset = train_dataset_L2
 tokenizer = tokenizer_L2
-_epochs = epochs[3]
 _batch_size = batch_size[3]
+_load = load[3]
+_epochs = epochs[3] if not skip[3] else 0
 
 train_step.reset()
 
@@ -640,6 +701,14 @@ os.mkdir(os.path.join(OUT_DIR, mode))
 
 reduceLR = ReduceLRonPlateau(ckpt_dict['optimizer'], patience=3, cooldown=6)
 earlyStop = EarlyStopping(patience=10, min_delta=0.)
+
+if _load:
+    ckpt_dir = os.path.join(load_dir, 'ckpt_%s' % (mode), 'validation')
+    latest = tf.train.latest_checkpoint(ckpt_dir)
+    if latest:
+        print('{}: Restored from {}'.format(mode, latest))
+        logger.info('{}: Restored from {}'.format(mode, latest))
+        checkpoint.restore(latest)
 
 # Run phase 4
 logger.info('Phase %s' % (mode))
@@ -717,6 +786,7 @@ checkpoint_manager['latest'].save()
 np.savetxt("loss_%s.csv" % (mode), metrics, delimiter=",", header='epochs,loss,val_loss,accuracy')
 
 #######         #######
-checkpoint.restore(checkpoint_manager['validation'].latest)
+if checkpoint_manager['validation'].latest_checkpoint:
+    checkpoint.restore(checkpoint_manager['validation'].latest_checkpoint)
 test_dump('p4')
 #######         #######
