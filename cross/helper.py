@@ -199,6 +199,21 @@ def create_checkpoint_manager(checkpoint, path):
         }
     return manager
 
+def load_checkpoint(checkpoint, load_ckpt_dir):
+    if tf.train.latest_checkpoint(os.path.join(load_ckpt_dir, 'val')):
+        latest = tf.train.latest_checkpoint(os.path.join(load_ckpt_dir, 'val'))
+        checkpoint.restore(latest)
+        return latest
+    elif tf.train.latest_checkpoint(os.path.join(load_ckpt_dir, 'acc')):
+        latest = tf.train.latest_checkpoint(os.path.join(load_ckpt_dir, 'acc'))
+        checkpoint.restore(latest)
+        return latest
+    elif tf.train.latest_checkpoint(os.path.join(load_ckpt_dir, 'latest')):
+        latest = tf.train.latest_checkpoint(os.path.join(load_ckpt_dir, 'latest'))
+        checkpoint.restore(latest)
+        return latest
+    return None
+
 def convert(lang, tensor):
     for t in tensor:
         if t!=0:

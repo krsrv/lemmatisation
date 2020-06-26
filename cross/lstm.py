@@ -348,12 +348,10 @@ os.mkdir(os.path.join(OUT_DIR, mode))
 earlyStop = EarlyStopping(patience=3, min_delta=0.)
 
 if _load:
-    ckpt_dir = os.path.join(load_dir, 'ckpt_%s' % (mode), 'latest')
-    latest = tf.train.latest_checkpoint(ckpt_dir)
+    latest = load_checkpoint(checkpoint, os.path.join(load_dir, 'ckpt_%s' % (mode)))
     if latest:
         print('{}: Restored from {}'.format(mode, latest))
         logger.info('{}: Restored from {}'.format(mode, latest))
-        checkpoint.restore(latest)
 
 # Run phase 1
 logger.info('Phase %s' % (mode))
@@ -419,6 +417,8 @@ for epoch in range(_epochs):
     
     if val_accuracy > metrics[-2][3]:
         checkpoint_manager['accuracy'].save()
+    if val_loss < metrics[-2][2]:
+        checkpoint_manager['validation'].save()
 
     # if reduceLR(metrics[-1][1]):
     #     logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
@@ -473,12 +473,10 @@ os.mkdir(os.path.join(OUT_DIR, mode))
 earlyStop = EarlyStopping(patience=5, min_delta=0.)
 
 if _load:
-    ckpt_dir = os.path.join(load_dir, 'ckpt_%s' % (mode), 'latest')
-    latest = tf.train.latest_checkpoint(ckpt_dir)
+    latest = load_checkpoint(checkpoint, os.path.join(load_dir, 'ckpt_%s' % (mode)))
     if latest:
         print('{}: Restored from {}'.format(mode, latest))
         logger.info('{}: Restored from {}'.format(mode, latest))
-        checkpoint.restore(latest)
 
 # Run phase 2
 logger.info('Phase %s' % (mode))
@@ -544,6 +542,8 @@ for epoch in range(_epochs):
     
     if val_accuracy > metrics[-2][3]:
         checkpoint_manager['accuracy'].save()
+    if val_loss < metrics[-2][2]:
+        checkpoint_manager['validation'].save()
 
     # if reduceLR(metrics[-1][1]):
     #     logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
@@ -599,12 +599,10 @@ reduceLR = ReduceLRonPlateau(ckpt_dict['optimizer'], patience=3, cooldown=6)
 earlyStop = EarlyStopping(patience=10, min_delta=0.)
 
 if _load:
-    ckpt_dir = os.path.join(load_dir, 'ckpt_%s' % (mode), 'validation')
-    latest = tf.train.latest_checkpoint(ckpt_dir)
+    latest = load_checkpoint(checkpoint, os.path.join(load_dir, 'ckpt_%s' % (mode)))
     if latest:
         print('{}: Restored from {}'.format(mode, latest))
         logger.info('{}: Restored from {}'.format(mode, latest))
-        checkpoint.restore(latest)
 
 # Run phase 3
 logger.info('Phase %s' % (mode))
@@ -670,6 +668,8 @@ for epoch in range(_epochs):
     
     if val_accuracy > metrics[-2][3]:
         checkpoint_manager['accuracy'].save()
+    if val_loss < metrics[-2][2]:
+        checkpoint_manager['validation'].save()
 
     if reduceLR(metrics[-1][1]):
         logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
@@ -725,12 +725,10 @@ reduceLR = ReduceLRonPlateau(ckpt_dict['optimizer'], patience=3, cooldown=6)
 earlyStop = EarlyStopping(patience=10, min_delta=0.)
 
 if _load:
-    ckpt_dir = os.path.join(load_dir, 'ckpt_%s' % (mode), 'validation')
-    latest = tf.train.latest_checkpoint(ckpt_dir)
+    latest = load_checkpoint(checkpoint, os.path.join(load_dir, 'ckpt_%s' % (mode)))
     if latest:
         print('{}: Restored from {}'.format(mode, latest))
         logger.info('{}: Restored from {}'.format(mode, latest))
-        checkpoint.restore(latest)
 
 # Run phase 4
 logger.info('Phase %s' % (mode))
@@ -796,6 +794,8 @@ for epoch in range(_epochs):
     
     if val_accuracy > metrics[-2][3]:
         checkpoint_manager['accuracy'].save()
+    if val_loss < metrics[-2][2]:
+        checkpoint_manager['validation'].save()
 
     if reduceLR(metrics[-1][1]):
         logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
