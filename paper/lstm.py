@@ -1,6 +1,6 @@
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = "3"
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"]="true"
 
 import tensorflow as tf
@@ -22,10 +22,10 @@ from helper import *
 parser = argparse.ArgumentParser(description="Train character seq2seq model", 
                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument("--num-samples", dest="num_samples", required=False,
-                    help="max number of samples for training", default=10000,
+                    help="max number of samples for training", default=20000,
                     type=int)
 parser.add_argument("--epochs", dest="epochs", required=False,
-                    help="number of epochs", default=100,
+                    help="number of epochs", default=50,
                     type=int)
 parser.add_argument("--latent-dim", dest="latent_dim", required=False,
                     help="size of LSTM unit", default=100,
@@ -57,7 +57,7 @@ parser.add_argument("--no-copy", dest="copy", required=False,
                     help="Skip copying/warm-up phase", action='store_false')
 parser.add_argument("--mask", dest="mask", required=False,
                     help="masking level: 0 = no mask, 1 = mask to attention, 2 = mask to attention + LSTM",
-                    default=0, type=int)
+                    default=1, type=int)
 args = parser.parse_args()
 
 # Create new output directory
@@ -179,8 +179,9 @@ copy_dataset = copy_dataset.batch(BATCH_SIZE, drop_remainder=True)
 copy_val_dataset = copy_val_dataset.batch(BATCH_SIZE, drop_remainder=True)
 
 # Create dataset for the main phase
+tt = mix_copy_and_train((input_tensor_train, target_tensor_train, tag_tensor_train), (X_train, Y_train, T_train))
 dataset = tf.data.Dataset.from_tensor_slices(
-    (input_tensor_train, target_tensor_train, tag_tensor_train)).shuffle(BUFFER_SIZE)
+    tt).shuffle(BUFFER_SIZE)
 val_dataset = tf.data.Dataset.from_tensor_slices(
     (input_tensor_val, target_tensor_val, tag_tensor_val)).shuffle(BUFFER_SIZE)
 
@@ -580,7 +581,7 @@ for epoch in range(EPOCHS):
         logger.info('Main phase early stopping')
         break
     
-    if accuracy[-1] > 0.99:
+    if accuracy[-1] > 0.99 and False:
         print('Accuracy exceeded 99%. Main phase breaking')
         logger.info('Main phase finished with accuracy {}'.format(accuracy[-1]))
         main_manager['latest'].save()
@@ -623,8 +624,8 @@ with open(os.path.join(DATA_DIR, 'test.csv'), 'r') as f, \
     corr = 0
     faul = 0
     for i, line in enumerate(f):
-        if i >= min(2000, num_samples):
-            break
+#if i >= min(2000, num_samples):
+#break
         line = line.strip()
         tag, word, lemma = line.split('\t')
         out, inp = evaluate(word, tag, inc_tags=inc_tags, mask=mask_level)

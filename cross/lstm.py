@@ -28,22 +28,22 @@ parser.add_argument("--num-samples", dest="num_samples", required=False,
                     help="max number of samples for training", default=None,
                     type=int)
 parser.add_argument("--units", dest="units", required=False,
-                    help="size of LSTM unit", default=100,
+                    help="size of LSTM unit", default=200,
                     type=int)
 parser.add_argument("--embed-dim", dest="embed_dim", required=False,
-                    help="size of embedding vector", default=32,
+                    help="size of embedding vector", default=100,
                     type=int)
 parser.add_argument("--epochs", dest="epochs", required=False,
-                    help="number of epochs for each phase", default='20,20,20,20',
+                    help="number of epochs for each phase", default='15,15,10,40',
                     type=str)
 parser.add_argument("--batch-size", dest="batch_size", required=False,
-                    help="Batch size", default='16,16,4,4',
+                    help="Batch size", default='10,10,10,10',
                     type=str)
 parser.add_argument("--lr", dest="lr", required=False,
-                    help="Initial learning rate", default='1e-3,1e-3,5e-4,5e-4',
+                    help="Initial learning rate", default='1e-3,1e-3,1e-3,1e-3',
                     type=str)
 parser.add_argument("--dropout", dest="dropout", required=False,
-                    help="Dropout rate", default=0.2,
+                    help="Dropout rate", default=0.4,
                     type=float)
 parser.add_argument("--L1", dest="L1", required=False,
                     help="High resource language directory", default=None,
@@ -54,7 +54,7 @@ parser.add_argument("--out-dir", dest="out_dir", required=True,
                     help="output directory", type=str)
 parser.add_argument("--mask", dest="mask", required=False,
                     help="masking level: 0 = no mask, 1 = mask to attention",
-                    default=0, type=int)
+                    default=1, type=int)
 parser.add_argument("--load", dest="load", required=False,
                     help="Which phases to pre-load",
                     default='0,0,0,0', type=str)
@@ -127,9 +127,9 @@ max_length_L2 = (max(train_tensors_L2[0].shape[1], val_tensors_L2[0].shape[1]), 
 
 ## Show length
 print('L1', len(train_tensors_L1[0]), len(train_tensors_L1[1]), 
-    len(test_tensors_L1[0]), len(test_tensors_L1[1]))
-print('L2', len(train_tensors_L2[0]), len(train_tensors_L2[1]), 
     len(val_tensors_L1[0]), len(val_tensors_L1[1]))
+print('L2', len(train_tensors_L2[0]), len(train_tensors_L2[1]), 
+    len(val_tensors_L2[0]), len(val_tensors_L2[1]))
 logger.debug('L1 training (input, target) tensor %d %d' % (
     len(train_tensors_L1[0]), len(train_tensors_L1[1])))
 logger.debug('L1 validating (input, target) tensor %d %d' % (
@@ -176,12 +176,15 @@ if args.dev_size:
     copy_val_dataset_L2 = copy_val_dataset_L2.take(args.dev_size)
 
 # Create main phase datasets
+tt_L1 = mix_copy_and_train(train_tensors_L1, copy_train_tensors_L1)
+tt_L2 = mix_copy_and_train(train_tensors_L2, copy_train_tensors_L2)
+
 train_dataset_L1 = tf.data.Dataset.from_tensor_slices(
-                    train_tensors_L1).shuffle(len(train_tensors_L1[0]))
+                    tt_L1).shuffle(len(train_tensors_L1[0]))
 val_dataset_L1 = tf.data.Dataset.from_tensor_slices(
                     val_tensors_L1).shuffle(len(val_tensors_L1[0]))
 train_dataset_L2 = tf.data.Dataset.from_tensor_slices(
-                    train_tensors_L2).shuffle(len(train_tensors_L2[0]))
+                    tt_L2).shuffle(len(train_tensors_L2[0]))
 val_dataset_L2 = tf.data.Dataset.from_tensor_slices(
                     val_tensors_L2).shuffle(len(val_tensors_L2[0]))
 
@@ -309,7 +312,7 @@ def test_dump(fname):
             output = output[:output.find(END_TOK):2]
             
             print(query, expected, output, tag, sep='\t', file=o)
-        print(total_accuracy.numpy(), 16*(batch+1), file=o)
+        print(total_accuracy.numpy(), 10*(batch+1), file=o)
 
 ##################################################################
 # Phase 1
@@ -419,6 +422,8 @@ for epoch in range(_epochs):
         checkpoint_manager['accuracy'].save()
     if val_loss < metrics[-2][2]:
         checkpoint_manager['validation'].save()
+    if val_accuracy > 0.80:
+        break
 
     # if reduceLR(metrics[-1][1]):
     #     logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
@@ -544,6 +549,8 @@ for epoch in range(_epochs):
         checkpoint_manager['accuracy'].save()
     if val_loss < metrics[-2][2]:
         checkpoint_manager['validation'].save()
+    if val_accuracy > 0.85:
+        break
 
     # if reduceLR(metrics[-1][1]):
     #     logger.info('Learning rate now {}'.format(reduceLR.get_lr()))
@@ -812,4 +819,7 @@ np.savetxt(os.path.join(OUT_DIR, "loss_%s.csv" % (mode)), metrics,
 if checkpoint_manager['validation'].latest_checkpoint:
     checkpoint.restore(checkpoint_manager['validation'].latest_checkpoint)
 test_dump(mode)
+if checkpoint_manager['accuracy'].latest_checkpoint:
+    checkpoint.restore(checkpoint_manager['accuracy'].latest_checkpoint)
+test_dump(mode + '_acc')
 #######         #######

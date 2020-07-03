@@ -150,7 +150,7 @@ class TrainStep():
         batch_loss = (loss / int(targets.shape[1]))
 
         if training:
-            if mode == 'P1':
+            if mode == 'P1' or mode == 'P2' or mode == 'P4':
                 variables = char_embedder.trainable_variables + tag_embedder.trainable_variables + \
                             self.char_encoder.trainable_variables + self.tag_encoder.trainable_variables + \
                             self.decoder.trainable_variables + dense_fc.trainable_variables
@@ -159,7 +159,7 @@ class TrainStep():
                             dense_fc.trainable_variables
             elif mode == 'P3':
                 variables = self.char_encoder.trainable_variables + self.tag_encoder.trainable_variables + \
-                            self.decoder.trainable_variables + dense_fc.trainable_variables
+                            self.decoder.trainable_variables
             elif mode == 'P4':
                 variables = dense_fc.trainable_variables
 

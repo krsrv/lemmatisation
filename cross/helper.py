@@ -10,6 +10,7 @@ import re
 import io
 import os
 import pickle
+import random
 
 def preprocess_tags(t):
     t = t.strip()
@@ -185,6 +186,19 @@ def create_copy_dataset_from_tensors(input_tensor, target_tensor, tag_tensor, co
                                                     padding='post')
     copy_tag_tensor = np.repeat(copy_tag_tensor, input_tensor.shape[0], axis=0)
     T = pad(copy_tag_tensor, tag_tensor)
+
+    return X, Y, T
+
+def mix_copy_and_train(train_tensor, copy_tensor):
+    copy_len = 3*len(train_tensor[0]) // 7
+    copy_tensor = list(zip(*copy_tensor))
+    random.shuffle(copy_tensor)
+    copy_tensor_X, copy_tensor_Y, copy_tensor_T = list(zip(*copy_tensor))
+    train_tensor_X, train_tensor_Y, train_tensor_T = train_tensor
+    
+    X = pad(train_tensor_X, np.array(list(copy_tensor_X)[:copy_len]))
+    Y = pad(train_tensor_Y, np.array(list(copy_tensor_Y)[:copy_len]))
+    T = pad(train_tensor_T, np.array(list(copy_tensor_T)[:copy_len]))
 
     return X, Y, T
 

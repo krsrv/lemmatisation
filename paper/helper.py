@@ -9,6 +9,7 @@ from  matplotlib.font_manager import FontProperties
 import re
 import io
 import pickle
+import random
 
 def preprocess_tags(t):
     t = t.strip()
@@ -163,6 +164,18 @@ def pad(x, y, concatenate=True):
         return np.concatenate([x, y], axis=0)
     else:
         return x, y
+
+def mix_copy_and_train(train_tensor, copy_tensor):
+    copy_len = 3*len(train_tensor[0]) // 7
+    copy_tensor = list(zip(*copy_tensor))
+    random.shuffle(copy_tensor)
+    copy_tensor_X, copy_tensor_Y, copy_tensor_T = list(zip(*copy_tensor))
+    train_tensor_X, train_tensor_Y, train_tensor_T = train_tensor
+
+    X = pad(train_tensor_X, np.array(list(copy_tensor_X)[:copy_len]))
+    Y = pad(train_tensor_Y, np.array(list(copy_tensor_Y)[:copy_len]))
+    T = pad(train_tensor_T, np.array(list(copy_tensor_T)[:copy_len]))
+    return X, Y, T
 
 def convert(lang, tensor):
     for t in tensor:

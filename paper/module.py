@@ -397,6 +397,8 @@ class Decoder(tf.keras.Model):
             # used for attention
             self.tag_attention = LuongAttention(2*self.dec_units)
             self.enc_attention = StructuralLuongAttention(self.dec_units)
+            self.W_i = tf.keras.layers.Dense(2*self.dec_units, use_bias=False)
+            self.dropout5 = tf.keras.layers.Dropout(rate)
         else:
             self.enc_attention = StructuralLuongAttention(self.dec_units)
 
@@ -427,11 +429,12 @@ class Decoder(tf.keras.Model):
             # Attend over encoder vectors
             enc_context_vector, attention_weights = self.enc_attention(s_k, enc_output, enc_mask)
 
-            state_c = enc_context_vector
             output, state_h, state_c = self.lstm(x, initial_state=(s_prev, state_c))
 
             # output shape == (batch_size * 1, hidden_size)
             output = tf.reshape(output, (-1, output.shape[2]))
+            output = tf.concat([output, enc_context_vector], axis=-1)
+            output = tf.math.tanh(self.dropout5(self.W_i(output)))
             
             # output shape == (batch_size, vocab)
             x = self.fc(output)

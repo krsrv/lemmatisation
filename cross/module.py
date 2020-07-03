@@ -452,6 +452,7 @@ class Decoder(tf.keras.Model):
             self.tag_attention = LuongAttention(2*self.dec_units)
             self.enc_attention = StructuralLuongAttention(self.dec_units)
             self.dropout3 = tf.keras.layers.Dropout(rate)
+            self.W_i = tf.keras.layers.Dense(2*self.dec_units)
         else:
             self.enc_attention = StructuralLuongAttention(self.dec_units)
 
@@ -493,8 +494,9 @@ class Decoder(tf.keras.Model):
             state = (state_h, state_c)
         elif self.inc_tags:
             assert tag_vecs is not None
-
             s_prev, state_c = state
+            output, state_h, state_c = self.lstm(x, initial_state=(s_prev, state_c))
+
             # Attend over tag vectors
             tag_context_vector, tag_attention_weights = self.tag_attention(s_prev, tag_vecs, tag_mask)
             
@@ -504,12 +506,10 @@ class Decoder(tf.keras.Model):
             # Attend over encoder vectors
             enc_context_vector, attention_weights = self.enc_attention(s_k, enc_output, enc_mask)
 
-            state_c = enc_context_vector
-            output, state_h, state_c = self.lstm(x, initial_state=(s_prev, state_c))
-
             # output shape == (batch_size * 1, hidden_size)
             output = tf.reshape(output, (-1, output.shape[2]))
-            output = self.dropout2(output)
+            output = tf.concat([output, enc_context_vector], axis=-1)
+            output = tf.math.tanh(self.dropout2(self.W_i(output)))
 
             attention_output = (attention_weights, tag_attention_weights)
             state = (state_h, state_c)
